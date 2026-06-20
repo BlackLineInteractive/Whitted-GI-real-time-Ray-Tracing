@@ -24,9 +24,13 @@ PFNGLCREATESHADERPROGRAMVPROC glCreateShaderProgramv_ = nullptr;
 PFNGLMEMORYBARRIERPROC glMemoryBarrier_ = nullptr;
 PFNGLBINDIMAGETEXTUREPROC glBindImageTexture_ = nullptr;
 
-std::string ReadShaderGL(const std::string& path) {
+std::string ReadShader(const std::string& path) {
     std::ifstream f(path);
-    if (!f.is_open()) return "";
+    if (!f.is_open()) f.open("../" + path);
+    if (!f.is_open()) {
+        std::cerr << "Failed to find shader file: " << path << std::endl;
+        return "";
+    }
     std::stringstream buffer;
     buffer << f.rdbuf();
     return buffer.str();
