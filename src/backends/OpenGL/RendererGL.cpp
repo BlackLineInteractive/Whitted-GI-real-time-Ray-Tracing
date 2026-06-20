@@ -232,6 +232,10 @@ public:
         SetupScene(version);
     }
 
+    void BeginImGuiFrame() override {
+        ImGui_ImplOpenGL3_NewFrame();
+    }
+
     void Render(float dt) override {
         Vec3 fwd(cos(cam_yaw)*cos(cam_pitch), sin(cam_pitch), sin(cam_yaw)*cos(cam_pitch));
         Vec3 right = Vec3(0,1,0).cross(fwd).normalize(); 

@@ -107,6 +107,10 @@ public:
         // In a full implementation, we'd recreate SSBOs and descriptor sets here.
     }
 
+    void BeginImGuiFrame() override {
+        // ImGui_ImplVulkan_NewFrame();
+    }
+
     void Render(float dt) override {
         // Mock rendering loop for Vulkan stub
         // In a real implementation:

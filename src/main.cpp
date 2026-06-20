@@ -98,6 +98,7 @@ int main(int argc, char* argv[]) {
 
         // Start ImGui frame
         ImGui_ImplSDL2_NewFrame();
+        renderer->BeginImGuiFrame();
         ImGui::NewFrame();
 
         // Draw HUD

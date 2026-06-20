@@ -39,6 +39,7 @@ class RendererMetal : public IRenderer {
     id<MTLBuffer> buf_uniforms = nil;
 
     MTLRenderPassDescriptor* renderPassDescriptor = nil;
+    id<CAMetalDrawable> currentDrawable = nil;
     
     int current_version = 1;
     bool fog_enabled = true;
@@ -145,6 +146,7 @@ public:
 
         buf_uniforms = [device newBufferWithLength:sizeof(GPUUniforms) options:MTLResourceStorageModeManaged];
 
+        ImGui_ImplSDL2_InitForMetal(window);
         ImGui_ImplMetal_Init(device);
         cam_pos = Vec3(0, 1.0, 2.0);
 
@@ -175,10 +177,24 @@ public:
         SetupScene(version);
     }
 
+    void BeginImGuiFrame() override {
+        @autoreleasepool {
+            currentDrawable = [metalLayer nextDrawable];
+            if (!currentDrawable) return;
+
+            renderPassDescriptor.colorAttachments[0].texture = currentDrawable.texture;
+            renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
+            renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+            ImGui_ImplMetal_NewFrame(renderPassDescriptor);
+        }
+    }
+
     void Render(float dt) override {
         @autoreleasepool {
-            id<CAMetalDrawable> drawable = [metalLayer nextDrawable];
-            if (!drawable) return;
+            if (!currentDrawable) return;
+            id<CAMetalDrawable> drawable = currentDrawable;
+
 
             // Update Uniforms
             Vec3 fwd(cos(cam_yaw)*cos(cam_pitch), sin(cam_pitch), sin(cam_yaw)*cos(cam_pitch));
@@ -228,6 +244,7 @@ public:
 
             [commandBuffer presentDrawable:drawable];
             [commandBuffer commit];
+            currentDrawable = nil;
         }
     }
 
@@ -239,6 +256,7 @@ public:
 
     void Cleanup() override {
         ImGui_ImplMetal_Shutdown();
+        ImGui_ImplSDL2_Shutdown();
     }
 };
 

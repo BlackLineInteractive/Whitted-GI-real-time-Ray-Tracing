@@ -21,6 +21,9 @@ public:
     // Switches demo scene
     virtual void SwitchDemo(int version) = 0; // 0 for v0.2, 1 for v0.3
     
+    // Start ImGui frame
+    virtual void BeginImGuiFrame() = 0;
+    
     // Cleanup resources
     virtual void Cleanup() = 0;
 
