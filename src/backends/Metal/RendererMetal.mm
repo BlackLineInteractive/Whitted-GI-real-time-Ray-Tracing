@@ -11,8 +11,16 @@
 #include "backends/imgui_impl_sdl2.h"
 
 std::string ReadShader(const std::string& path) {
-    std::ifstream f(path);
-    if (!f.is_open()) f.open("../" + path);
+    char* basePathStr = SDL_GetBasePath();
+    std::string basePath = basePathStr ? basePathStr : "";
+    if (basePathStr) SDL_free(basePathStr);
+
+    std::string fullPath = basePath + path;
+    std::ifstream f(fullPath);
+    if (!f.is_open()) {
+        fullPath = basePath + "../" + path;
+        f.open(fullPath);
+    }
     if (!f.is_open()) {
         std::cerr << "Failed to find shader file: " << path << std::endl;
         return "";

@@ -5,11 +5,47 @@
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
 
+#include <fstream>
+#include <sstream>
+
+struct Config {
+    int width = 1280;
+    int height = 720;
+    bool fullscreen = false;
+};
+
+Config LoadConfig() {
+    Config cfg;
+    std::string path = "config.txt";
+    char* basePathStr = SDL_GetBasePath();
+    if (basePathStr) {
+        path = std::string(basePathStr) + "config.txt";
+        SDL_free(basePathStr);
+    }
+
+    std::ifstream f(path);
+    if (!f.is_open()) {
+        // Create default config
+        std::ofstream out(path);
+        out << "width=1280\nheight=720\nfullscreen=0\n";
+        return cfg;
+    }
+
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.find("width=") == 0) cfg.width = std::stoi(line.substr(6));
+        else if (line.find("height=") == 0) cfg.height = std::stoi(line.substr(7));
+        else if (line.find("fullscreen=") == 0) cfg.fullscreen = std::stoi(line.substr(11)) > 0;
+    }
+    return cfg;
+}
+
 int main(int argc, char* argv[]) {
     (void)argc; (void)argv;
 
-    const int RENDER_WIDTH  = 1280;
-    const int RENDER_HEIGHT = 720;
+    Config cfg = LoadConfig();
+    const int RENDER_WIDTH  = cfg.width;
+    const int RENDER_HEIGHT = cfg.height;
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::cerr << "Error: " << SDL_GetError() << std::endl;
@@ -26,7 +62,11 @@ int main(int argc, char* argv[]) {
     window_flags |= SDL_WINDOW_OPENGL;
 #endif
 
-    SDL_Window* window = SDL_CreateWindow("Blackline Analytic RayTracer", 
+    if (cfg.fullscreen) {
+        window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+    }
+
+    SDL_Window* window = SDL_CreateWindow("Whitted GI RayTracer", 
                                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
                                           RENDER_WIDTH, RENDER_HEIGHT, window_flags);
 
@@ -77,6 +117,12 @@ int main(int argc, char* argv[]) {
             ImGui_ImplSDL2_ProcessEvent(&e);
             if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) quit = true;
             
+            // Toggle fullscreen
+            if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_F11) {
+                bool is_fs = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+                SDL_SetWindowFullscreen(window, is_fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+            }
+
             // Toggle relative mouse mode
             if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_m) {
                 SDL_SetRelativeMouseMode(SDL_GetRelativeMouseMode() ? SDL_FALSE : SDL_TRUE);
@@ -127,6 +173,12 @@ int main(int argc, char* argv[]) {
             ImGui::Text("WASD - Move | Mouse - Look");
             ImGui::Text("M - Toggle Mouse Mode");
             ImGui::Text("V - Toggle Fog (Demo 0.3)");
+            ImGui::Text("F11 - Toggle Fullscreen");
+            if (ImGui::Button("Toggle Fullscreen")) {
+                bool is_fs = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+                SDL_SetWindowFullscreen(window, is_fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+            }
+            ImGui::Separator();
             
             int prev_version = demo_version;
             ImGui::RadioButton("Demo 0.2", &demo_version, 0); ImGui::SameLine();
