@@ -176,9 +176,9 @@ The mesh is automatically centred and scaled to fit within 2 world units. Primit
 | | |
 |---|---|
 | Machine | MacBook Pro 16,1 (2019) |
-| CPU | Intel Core i7-9750H, 6 cores at 2.6 GHz |
-| GPU | AMD Radeon Pro 5300M, 4 GB GDDR6 |
-| RAM | 16 GB DDR4 |
+| CPU | Intel Core i9, 8 cores |
+| GPU | AMD Radeon Pro 5500M, 8 GB GDDR6 |
+| RAM | 32 GB DDR4 |
 | OS | macOS 26.5.1 |
 | API | Metal (compute) |
 
