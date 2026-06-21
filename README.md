@@ -6,7 +6,7 @@ Runs on Metal (macOS), OpenGL 4.3 (cross-platform), and Vulkan (stub, requires S
 
 ---
 <p align="center">
-  <em>screenshot 1: Demo 0.2 (Spheres & Global Illumination) &nbsp;&nbsp;
+  <em>screenshot 1: Demo 0.2 (Shadows) &nbsp;&nbsp;
 </p>
     
 <p align="center">
