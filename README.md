@@ -12,7 +12,9 @@ Runs on Metal (macOS), OpenGL 4.3 (cross-platform), and Vulkan (stub, requires S
   <img src="screenshot/3.5.png" width="107%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);" alt="Demo 0.3">
 </p>
 <p align="center">
-  <em>Left: Demo 0.2 (Spheres & Global Illumination) &nbsp;&nbsp;|&nbsp;&nbsp; Right: Demo 0.3 (Procedural Water & Fog)</em>
+  <em>1: Demo 0.2 (Spheres & Global Illumination) &nbsp;&nbsp;
+    
+  &nbsp;&nbsp; 2 & 3 Demo 0.3 (Procedural Water & Fog)</em>
 </p>
 
 ---
