@@ -6,6 +6,14 @@ Runs on Metal (macOS), OpenGL 4.3 (cross-platform), and Vulkan (stub, requires S
 
 ---
 
+## Screenshots
+
+| Demo 0.2 | Demo 0.3 (water + fog) |
+|:---:|:---:|
+| ![demo02](screenshot/2.png) | ![demo03](screenshot/3.5.png) |
+
+---
+
 ## How it works
 
 Each frame, the GPU dispatches one compute thread per pixel. Every thread casts a primary ray from the camera through its pixel and resolves lighting by spawning secondary rays recursively via an explicit stack (no hardware ray tracing required):
@@ -28,9 +36,8 @@ For triangle meshes, a BVH is built on the CPU using midpoint splits and uploade
 - Analytical global illumination (form-factor inter-object bounce)
 - Procedural animated water with Fresnel reflection and refraction
 - Height-based volumetric fog
-- 2×2 SSAA subpixel supersampling
+- Adjustable sub-pixel supersampling (1 to 4 samples per pixel)
 - Sub-pixel temporal jitter
-- Checkerboard rendering (alternating pixels per frame, halves GPU load)
 - GLB / glTF 2.0 mesh loading with full PBR material extraction
 - OBJ mesh loading
 - Automatic mesh scaling and centering
@@ -122,7 +129,7 @@ model_z=-3
 | `fullscreen` | 1 = launch in fullscreen |
 | `enable_physics` | 1 = objects fall and collide |
 | `enable_jitter` | 1 = sub-pixel jitter per frame |
-| `enable_checkerboard` | 1 = render every other pixel per frame |
+| `samples` | Number of ray samples per pixel (1 to 4) |
 | `model_path` | Path to GLB / glTF / OBJ file (empty = primitive scene) |
 | `model_x/y/z` | World position of the loaded model |
 
@@ -154,7 +161,7 @@ The mesh is automatically centred and scaled to fit within 2 world units. Primit
 
 **Jitter** offsets subpixel sample positions each frame using a hash seeded by time. Softens aliasing without increasing sample count. Adds slight temporal shimmer during camera movement.
 
-**Checkerboard** renders only half the pixels per frame, alternating which half each frame. Reduces GPU work by roughly half at the cost of minor ghosting during fast movement. Can be combined with jitter.
+**Samples (AA)** increases the number of rays cast per pixel per frame (up to 4). Defaults to 1 for maximum performance. Higher values produce perfectly smooth edges (SSAA) at the cost of GPU time.
 
 ---
 
