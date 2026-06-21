@@ -14,7 +14,7 @@ Runs on Metal (macOS), OpenGL 4.3 (cross-platform), and Vulkan (stub, requires S
 <p align="center">
   <em>1: Demo 0.2 (Spheres & Global Illumination) &nbsp;&nbsp;
     
-  &nbsp;&nbsp; 2 & 3 Demo 0.3 (Procedural Water & Fog)</em>
+   &nbsp;&nbsp;   2 & 3 Demo 0.3 (Procedural Water & Fog)</em>
 </p>
 
 ---
