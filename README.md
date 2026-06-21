@@ -1,4 +1,4 @@
-# Whitted GI Ray Tracer
+# Whitted GI Ray Tracing
 
 A real-time ray tracer built around Turner Whitted's 1980 recursive illumination model. Renders analytical geometry and triangulated meshes entirely on the GPU using compute shaders — no rasterisation pipeline, no stochastic sampling noise.
 
