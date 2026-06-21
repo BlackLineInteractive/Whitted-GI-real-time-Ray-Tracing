@@ -18,7 +18,7 @@ struct Config {
     bool  fullscreen          = false;
     bool  enable_physics      = true;
     bool  enable_jitter       = false;
-    bool  enable_checkerboard = false;
+    int   samples             = 1;
     bool  show_primitives     = true;
     std::string model_path    = "";
     float model_x = 0.0f, model_y = 0.0f, model_z = -3.0f;
@@ -46,7 +46,7 @@ static Config LoadConfig() {
         else if (key == "fullscreen")     cfg.fullscreen          = std::stoi(val) > 0;
         else if (key == "enable_physics") cfg.enable_physics      = std::stoi(val) > 0;
         else if (key == "enable_jitter")  cfg.enable_jitter       = std::stoi(val) > 0;
-        else if (key == "enable_checkerboard") cfg.enable_checkerboard = std::stoi(val) > 0;
+        else if (key == "samples")        cfg.samples             = std::stoi(val);
         else if (key == "show_primitives") cfg.show_primitives    = std::stoi(val) > 0;
         else if (key == "model_path")     cfg.model_path          = val;
         else if (key == "model_x")        cfg.model_x             = std::stof(val);
@@ -63,7 +63,7 @@ static void SaveConfig(const Config& cfg) {
     f << "fullscreen="          << (cfg.fullscreen ? 1 : 0) << "\n";
     f << "enable_physics="      << (cfg.enable_physics ? 1 : 0) << "\n";
     f << "enable_jitter="       << (cfg.enable_jitter ? 1 : 0) << "\n";
-    f << "enable_checkerboard=" << (cfg.enable_checkerboard ? 1 : 0) << "\n";
+    f << "samples="             << cfg.samples << "\n";
     f << "show_primitives="     << (cfg.show_primitives ? 1 : 0) << "\n";
     f << "model_path="          << cfg.model_path          << "\n";
     f << "model_x="             << cfg.model_x             << "\n";
@@ -122,11 +122,17 @@ int main(int argc, char* argv[]) {
 
     if (!renderer || !renderer->Init(window, cfg.width, cfg.height)) {
         std::cerr << "Renderer init failed." << std::endl;
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+            "Renderer Initialization Failed",
+            "Failed to initialize the graphics backend.\n\n"
+            "If you are on macOS and running the OpenGL version, please note that macOS does NOT support OpenGL 4.3 Compute Shaders.\n\n"
+            "You MUST run the Metal version: build_metal/Whitted_GI_RayTracer",
+            window);
         SDL_DestroyWindow(window); SDL_Quit(); return -1;
     }
 
     // Apply initial feature states
-    renderer->SetCheckerboard(cfg.enable_checkerboard);
+    renderer->SetSamples(cfg.samples);
     if (cfg.enable_jitter) renderer->ToggleJitter();
 
     // --------------------------------------- physics setup
@@ -159,7 +165,7 @@ int main(int argc, char* argv[]) {
     bool  fog_enabled     = true;
     bool  physics_enabled = cfg.enable_physics;
     bool  jitter_on       = cfg.enable_jitter;
-    bool  checkerboard_on = cfg.enable_checkerboard;
+    int   samples         = cfg.samples;
     bool  mouse_captured  = true;
     int   res_w           = cfg.width;
     int   res_h           = cfg.height;
@@ -252,8 +258,8 @@ int main(int argc, char* argv[]) {
         if (ImGui::Checkbox("Fog",  &fog_enabled))     renderer->ToggleFog();
         ImGui::SameLine();
         if (ImGui::Checkbox("Jitter", &jitter_on))     renderer->ToggleJitter();
-        if (ImGui::Checkbox("Checkerboard (TAA-like)", &checkerboard_on))
-            renderer->SetCheckerboard(checkerboard_on);
+        if (ImGui::SliderInt("Samples (AA)", &samples, 1, 4))
+            renderer->SetSamples(samples);
 
         ImGui::Separator();
         // ---- Resolution
@@ -359,7 +365,7 @@ int main(int argc, char* argv[]) {
     // Save final config
     cfg.enable_physics      = physics_enabled;
     cfg.enable_jitter       = jitter_on;
-    cfg.enable_checkerboard = checkerboard_on;
+    cfg.samples             = samples;
     cfg.model_x = model_pos[0];
     cfg.model_y = model_pos[1];
     cfg.model_z = model_pos[2];

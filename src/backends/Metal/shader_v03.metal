@@ -39,8 +39,7 @@ struct Uniforms {
     float time;
     int enable_fog;
     int enable_jitter;
-    int enable_checkerboard;
-    int checkerboard_frame;
+    int samples_per_pixel;
     int pad_end;
 };
 
@@ -555,15 +554,6 @@ kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture
 
     if (gid.x >= uint(u.screen_width) || gid.y >= uint(u.screen_height)) return;
 
-    // Checkerboard: skip every other pixel per frame
-    if (u.enable_checkerboard > 0) {
-        int parity = (int(gid.x) + int(gid.y)) & 1;
-        if (parity != u.checkerboard_frame) {
-            // Carry previous frame value — just skip this frame
-            return;
-        }
-    }
-
     float2 px     = float2(gid);
     float  py_inv = u.screen_height - px.y;
 
@@ -578,7 +568,9 @@ kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture
     float3 color      = float3(0.0);
     float3 center_dir = float3(0.0);
     float  center_fd  = 60.0;
-    int    SAMPLES    = 2; // 2x2 SSAA
+    int    SAMPLES    = u.samples_per_pixel;
+    if (SAMPLES < 1) SAMPLES = 1;
+    if (SAMPLES > 4) SAMPLES = 4;
 
     for (int dy = 0; dy < SAMPLES; dy++) {
         for (int dx = 0; dx < SAMPLES; dx++) {

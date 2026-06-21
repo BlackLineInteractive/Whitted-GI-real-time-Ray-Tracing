@@ -65,8 +65,7 @@ class RendererMetal : public IRenderer {
     int   m_version          = 1;
     bool  m_fog              = true;
     bool  m_jitter           = false;
-    bool  m_checkerboard     = false;
-    int   m_checkerboard_frame = 0;
+    int   m_samples          = 1;
     bool  m_mesh_loaded      = false;
     int   m_render_w         = 0;
     int   m_render_h         = 0;
@@ -227,9 +226,8 @@ public:
     void ToggleFog()     override { m_fog    = !m_fog; }
     void ToggleJitter()  override { m_jitter = !m_jitter; }
 
-    void SetCheckerboard(bool on) override {
-        m_checkerboard = on;
-        m_checkerboard_frame = 0;
+    void SetSamples(int samples) override {
+        m_samples = samples;
     }
 
     void SwitchDemo(int version) override {
@@ -319,8 +317,7 @@ public:
             m_uniforms.time = float(SDL_GetTicks() % 10000000) / 1000.0f;
             m_uniforms.enable_fog          = m_fog ? 1 : 0;
             m_uniforms.enable_jitter       = m_jitter ? 1 : 0;
-            m_uniforms.enable_checkerboard = m_checkerboard ? 1 : 0;
-            m_uniforms.checkerboard_frame  = m_checkerboard_frame;
+            m_uniforms.samples_per_pixel   = m_samples;
 
             memcpy([m_buf_uniforms contents], &m_uniforms, sizeof(GPUUniforms));
 
@@ -361,8 +358,6 @@ public:
 
             [m_drawable release];
             m_drawable = nil;
-
-            if (m_checkerboard) m_checkerboard_frame ^= 1;
         }
     }
 

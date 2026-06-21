@@ -1,110 +1,80 @@
-# Whitted Global Illuminated Real-Time Ray Tracer
+# Whitted GI Ray Tracer
 
-A unified compute-shader ray tracer based on Turner Whitted's 1980 recursive ray tracing algorithm.
-Renders analytical primitives (spheres, planes, cubes) and 3D mesh models in real time using 
-per-frame GPU compute passes — no rasterization, no path tracing noise.
+A real-time ray tracer built around Turner Whitted's 1980 recursive illumination model. Renders analytical geometry and triangulated meshes entirely on the GPU using compute shaders — no rasterisation pipeline, no stochastic sampling noise.
 
-Supports **Metal** (macOS), **OpenGL 4.3** (cross-platform), and **Vulkan** (stub, requires SDK).
+Runs on Metal (macOS), OpenGL 4.3 (cross-platform), and Vulkan (stub, requires SDK).
 
 ---
 
-## Screenshots
+## How it works
 
-| Demo 0.2 | Demo 0.3 (water + fog) |
-|:---:|:---:|
-| ![demo02](screenshot/2.png) | ![demo03](screenshot/3.5.png) |
+Each frame, the GPU dispatches one compute thread per pixel. Every thread casts a primary ray from the camera through its pixel and resolves lighting by spawning secondary rays recursively via an explicit stack (no hardware ray tracing required):
+
+- **Shadow rays** — one per light source per bounce, determining direct occlusion via analytic cone-sphere overlap rather than stochastic sampling.
+- **Reflection rays** — spawned for metallic and glossy surfaces.
+- **Refraction rays** — computed with Snell's law and Schlick's Fresnel approximation for glass and water materials.
+
+Indirect lighting is approximated analytically: ambient occlusion comes from form-factor integration over nearby sphere volumes, and inter-object colour bleeding uses distance-weighted albedo transfer between primitives. The sky model blends towards a horizon colour and contributes ambient light through dot-product weighting. Tone mapping is Reinhard with gamma 2.2 correction.
+
+For triangle meshes, a BVH is built on the CPU using midpoint splits and uploaded as a flat buffer. The shader traverses it iteratively with a thread-local stack and tests leaves using the Möller–Trumbore intersection formula. Per-vertex normals are interpolated barycentrically for smooth shading.
 
 ---
 
 ## Features
 
-| Feature | Status |
-|---|---|
-| Whitted recursive ray tracing | ✅ |
-| Analytical soft shadows (cone-sphere) | ✅ |
-| Analytical ambient occlusion | ✅ |
-| Analytical global illumination (form factors) | ✅ |
-| Procedural water + Fresnel | ✅ |
-| Atmospheric fog (height-based) | ✅ |
-| 4× SSAA anti-aliasing | ✅ |
-| Sub-pixel jitter (temporal noise) | ✅ |
-| Checkerboard rendering (alternate pixels per frame) | ✅ |
-| GLB / glTF 2.0 mesh loading (PBR materials) | ✅ |
-| OBJ mesh loading | ✅ |
-| BVH acceleration for meshes (CPU-built, GPU-traversed) | ✅ |
-| Möller–Trumbore triangle intersection | ✅ |
-| Analytic rigid-body physics (gravity, bounce, collision) | ✅ |
-| Real-time config (resolution, features, model path) | ✅ |
-| Fullscreen toggle (F11 / button) | ✅ |
-| ImGui HUD with file browser | ✅ |
-| Metal backend | ✅ |
-| OpenGL 4.3 backend | ✅ |
-| Vulkan backend | 🚧 stub |
-
----
-
-## Algorithm — How It Works
-
-The renderer is based on **Turner Whitted's 1980** paper *"An Improved Illumination Model for Shaded Display"*.
-
-### Ray tracing loop (per pixel, per frame)
-
-1. **Primary ray** is cast from the camera through the pixel.
-2. On hit, three sub-rays may be spawned recursively (stack-based, no actual recursion):
-   - **Shadow rays** — one per light source, checking if the hit point is lit.
-   - **Reflection ray** — for metallic or glossy surfaces.
-   - **Refraction ray** — for glass/water using Snell's law + Schlick Fresnel.
-3. **Soft shadows** are computed analytically via a cone-sphere overlap test (no shadow sampling noise).
-4. **Ambient occlusion** is computed analytically via form-factor integration over nearby spheres.
-5. **Global illumination** approximates inter-object bounce using distance-weighted albedo transfer.
-6. **Tone mapping** — Reinhard operator + gamma 2.2 correction applied in-shader.
-
-### Mesh support
-
-When a 3D model is loaded (GLB / OBJ):
-- **Assimp** decodes geometry and PBR materials (base color, metallic, roughness).
-- The mesh is auto-scaled to fit within 2 world units and centred at origin.
-- A flat **BVH** (bounding volume hierarchy) is built on the CPU using midpoint splits.
-- BVH nodes and triangles are uploaded to GPU as structured buffers.
-- The shader traverses the BVH iteratively using a thread-local stack (no recursion).
-- Each leaf tests triangles via **Möller–Trumbore** intersection.
+- Recursive Whitted ray tracing up to depth 7
+- Analytical soft shadows (cone-sphere occlusion)
+- Analytical ambient occlusion
+- Analytical global illumination (form-factor inter-object bounce)
+- Procedural animated water with Fresnel reflection and refraction
+- Height-based volumetric fog
+- 2×2 SSAA subpixel supersampling
+- Sub-pixel temporal jitter
+- Checkerboard rendering (alternating pixels per frame, halves GPU load)
+- GLB / glTF 2.0 mesh loading with full PBR material extraction
+- OBJ mesh loading
+- Automatic mesh scaling and centering
+- BVH acceleration structure (CPU build, GPU traversal)
+- Möller–Trumbore triangle intersection with interpolated normals
+- Analytic rigid-body physics (gravity, elastic floor, sphere collisions)
+- Real-time ImGui panel: resolution, rendering modes, mesh loader, physics toggle
+- In-app file browser for mesh selection
+- Persistent config file
+- Fullscreen toggle
 
 ---
 
 ## Dependencies
 
-All dependencies download automatically at CMake configure time — **nothing to install manually** except the base system libs.
+SDL2, Assimp, and Bullet must be installed on the system. Everything else is fetched automatically at configure time.
+
+```
+brew install sdl2 assimp bullet
+```
 
 | Library | Source | Purpose |
 |---|---|---|
-| SDL2 | System (Homebrew: `brew install sdl2`) | Window, input, Metal/OpenGL context |
-| Assimp 6.x | System (Homebrew: `brew install assimp`) | GLB/glTF/OBJ loading |
-| Bullet 3.25 | System (Homebrew: `brew install bullet`) | Physics math (linked but sim is custom) |
-| Dear ImGui | Auto-fetched (GitHub) | HUD, file dialog |
-| ImGuiFileDialog | Auto-fetched (GitHub) | In-app file browser |
-| stb_image, stb_image_write | Auto-downloaded (single headers) | Image utilities |
-| svenstaro/bvh | Auto-fetched (GitHub) | Header-only BVH reference |
+| SDL2 | Homebrew | Window, input, Metal/OpenGL context |
+| Assimp 6.x | Homebrew | GLB, glTF 2.0, OBJ loading |
+| Bullet 3.25 | Homebrew | Physics (linked; simulation is custom) |
+| Dear ImGui | Fetched from GitHub | HUD and controls |
+| ImGuiFileDialog | Fetched from GitHub | In-app file browser |
+| stb_image | Downloaded (single header) | Image utilities |
+| svenstaro/bvh | Fetched from GitHub | Header-only BVH reference |
 
-**Author credits:**
-- **Turner Whitted** — original ray tracing algorithm (1980)
-- **Omar Cornut** — [Dear ImGui](https://github.com/ocornut/imgui)
-- **Sean Barrett** — [stb](https://github.com/nothings/stb)
-- **Sven-Hendrik Haase (svenstaro)** — [bvh](https://github.com/svenstaro/bvh)
-- **aiekick** — [ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog)
-- **The Assimp Authors** — [Open Asset Import Library](https://github.com/assimp/assimp)
+**Credits:**
+Turner Whitted — original algorithm (1980).
+Omar Cornut — [Dear ImGui](https://github.com/ocornut/imgui).
+Sean Barrett — [stb](https://github.com/nothings/stb).
+Sven-Hendrik Haase — [bvh](https://github.com/svenstaro/bvh).
+aiekick — [ImGuiFileDialog](https://github.com/aiekick/ImGuiFileDialog).
+The Assimp team — [Open Asset Import Library](https://github.com/assimp/assimp).
 
 ---
 
-## Build
+## Building
 
-### Requirements
-
-- macOS 13+ (Metal), or Linux/Windows with OpenGL 4.3
-- CMake 3.15+
-- Xcode Command Line Tools (macOS)
-- Homebrew packages: `brew install sdl2 assimp bullet`
-
-### Metal (macOS — recommended)
+### Metal (macOS)
 
 ```bash
 cmake -B build_metal -DUSE_METAL=ON -DUSE_VULKAN=OFF -DUSE_OPENGL=OFF
@@ -112,7 +82,7 @@ cmake --build build_metal -j$(nproc)
 ./build_metal/Whitted_GI_RayTracer
 ```
 
-### OpenGL (macOS / Linux)
+### OpenGL
 
 ```bash
 cmake -B build_gl -DUSE_METAL=OFF -DUSE_VULKAN=OFF -DUSE_OPENGL=ON
@@ -123,17 +93,15 @@ cmake --build build_gl -j$(nproc)
 ### Vulkan (requires Vulkan SDK)
 
 ```bash
-# Install Vulkan SDK: https://vulkan.lunarg.com/
 cmake -B build_vk -DUSE_METAL=OFF -DUSE_VULKAN=ON -DUSE_OPENGL=OFF
 cmake --build build_vk -j$(nproc)
 ```
 
 ---
 
-## Configuration (`config.txt`)
+## Configuration
 
-A `config.txt` file is created automatically next to the executable on first launch.
-You can edit it manually or change everything in the ImGui panel at runtime.
+`config.txt` is created next to the binary on first launch. All values can also be changed at runtime through the ImGui panel.
 
 ```ini
 width=1280
@@ -142,7 +110,6 @@ fullscreen=0
 enable_physics=1
 enable_jitter=0
 enable_checkerboard=0
-show_primitives=1
 model_path=
 model_x=0
 model_y=0
@@ -151,92 +118,77 @@ model_z=-3
 
 | Key | Description |
 |---|---|
-| `width` / `height` | Initial render resolution |
-| `fullscreen` | `1` = launch in fullscreen |
-| `enable_physics` | `1` = objects fall under gravity |
-| `enable_jitter` | `1` = sub-pixel jitter (smooths aliasing over time) |
-| `enable_checkerboard` | `1` = render every other pixel per frame (cost ÷2) |
-| `model_path` | Absolute path to GLB/GLTF/OBJ (leave empty for primitive scene) |
+| `width` / `height` | Startup resolution |
+| `fullscreen` | 1 = launch in fullscreen |
+| `enable_physics` | 1 = objects fall and collide |
+| `enable_jitter` | 1 = sub-pixel jitter per frame |
+| `enable_checkerboard` | 1 = render every other pixel per frame |
+| `model_path` | Path to GLB / glTF / OBJ file (empty = primitive scene) |
 | `model_x/y/z` | World position of the loaded model |
 
 ---
 
 ## Controls
 
-| Key | Action |
+| Input | Action |
 |---|---|
-| `W A S D` | Move camera |
-| `Q` / `E` | Move camera down / up |
-| `Mouse` | Look around |
-| `M` | Toggle mouse capture |
-| `V` | Toggle volumetric fog |
-| `F11` | Toggle fullscreen |
-| `Esc` | Quit |
+| W A S D | Move |
+| Q / E | Move down / up |
+| Mouse | Look |
+| M | Toggle mouse capture |
+| V | Toggle fog |
+| F11 | Toggle fullscreen |
+| Esc | Quit |
 
 ---
 
-## Loading 3D Models (GLB / OBJ)
+## Loading a model
 
-1. Click **"..."** in the ImGui panel to open the file browser.
-2. Navigate to your `.glb`, `.gltf`, or `.obj` file and select it.
-3. Set the **X / Y / Z** position.
-4. Click **"Load Model"**.
+Click the `...` button in the panel to open the file browser. Select a `.glb`, `.gltf`, or `.obj` file, set the X / Y / Z position, then click **Load Model**.
 
-The model is automatically scaled to fit within 2 units and centred.
-All primitives (spheres, cubes) are hidden while a mesh is loaded.
-Click **"Remove Model"** to restore the primitive scene.
-
-> **Tip:** The floor plane always remains visible regardless of whether a mesh or primitives are active.
+The mesh is automatically centred and scaled to fit within 2 world units. Primitives (spheres, cubes) are hidden while a mesh is active. The floor plane remains in both modes. Click **Remove Model** to restore the primitive scene.
 
 ---
 
-## Render Modes
+## Rendering modes
 
-### Jitter
-Randomises the sub-pixel sample offset each frame using a hash function seeded by `time`.
-Smooths aliasing edges without reducing performance, but introduces slight temporal shimmer.
+**Jitter** offsets subpixel sample positions each frame using a hash seeded by time. Softens aliasing without increasing sample count. Adds slight temporal shimmer during camera movement.
 
-### Checkerboard
-Renders only half the pixels per frame (alternating checkerboard pattern).
-Cuts GPU work roughly in half at the cost of slight image ghosting during fast camera movement.
-Both modes can be combined.
+**Checkerboard** renders only half the pixels per frame, alternating which half each frame. Reduces GPU work by roughly half at the cost of minor ghosting during fast movement. Can be combined with jitter.
 
 ---
 
-## Test Hardware
+## Test hardware
 
-Performance figures measured on:
-
-| Component | Spec |
+| | |
 |---|---|
 | Machine | MacBook Pro 16,1 (2019) |
-| CPU | Intel Core i7-9750H (6-core, 2.6 GHz) |
-| GPU | AMD Radeon Pro 5300M (4 GB GDDR6) |
+| CPU | Intel Core i7-9750H, 6 cores at 2.6 GHz |
+| GPU | AMD Radeon Pro 5300M, 4 GB GDDR6 |
 | RAM | 16 GB DDR4 |
-| OS | macOS 26.5.1 (Sequoia) |
-| API | Metal (compute shaders) |
+| OS | macOS 26.5.1 |
+| API | Metal (compute) |
 
-**Typical performance (1280×720, Demo 0.3, depth 7):** ~60 FPS on the above hardware.
-Checkerboard mode pushes this to ~110 FPS with acceptable quality.
+At 1280x720 with Demo 0.3, depth 7: approximately 60 fps. Checkerboard mode brings this to around 110 fps with acceptable quality.
 
 ---
 
-## Project Structure
+## Project layout
 
 ```
 RayTracer_Unified/
 ├── CMakeLists.txt
 ├── README.md
-├── config.txt              (auto-generated)
+├── config.txt
 ├── includes/
-│   ├── Scene.h             (GPU structs, Vec3, materials)
-│   ├── Renderer.h          (IRenderer interface)
-│   ├── ModelLoader.h       (Assimp loader API)
-│   └── Physics.h           (PhysicsWorld API)
+│   ├── Scene.h             GPU structs, Vec3, material types
+│   ├── Renderer.h          IRenderer interface
+│   ├── ModelLoader.h       Assimp loader and MeshData
+│   └── Physics.h           PhysicsWorld
 ├── src/
-│   ├── main.cpp            (SDL loop, ImGui, config)
-│   ├── ModelLoader.cpp     (Assimp + BVH builder)
-│   ├── Physics.cpp         (Analytic rigid body sim)
+│   ├── main.cpp
+│   ├── ModelLoader.cpp     Assimp import, auto-scale, BVH build
+│   ├── Physics.cpp         Rigid body simulation
 │   └── backends/
 │       ├── Metal/
 │       │   ├── RendererMetal.mm
@@ -248,7 +200,5 @@ RayTracer_Unified/
 │       │   └── shader_v03.comp
 │       └── Vulkan/
 │           ├── RendererVK.cpp
-│           ├── shader_v02.comp
 │           └── shader_v03.comp
 └── screenshot/
-```

@@ -10,15 +10,18 @@ struct Light { packed_float3 position; float intensity; packed_float3 color; flo
 
 struct Uniforms {
     int num_spheres, num_planes, num_cubes, num_octahedrons;
-    int num_lights, max_depth, pad0, pad1;
+    int num_lights,  max_depth,  num_triangles, enable_triangles;
     float tan_half_fov, aspect_ratio, screen_width, screen_height;
     packed_float3 ambient_light; float pad2;
     packed_float3 camera_origin; float pad3;
     packed_float3 camera_forward; float pad4;
-    packed_float3 camera_right; float pad5;
-    packed_float3 camera_up; float pad6;
-    float time; 
-    int enable_fog; int pad8;
+    packed_float3 camera_right;   float pad5;
+    packed_float3 camera_up;      float pad6;
+    float time;
+    int enable_fog;
+    int enable_jitter;
+    int samples_per_pixel;
+    int pad_end;
 };
 
 constant float EPSILON = 1e-4;
@@ -383,7 +386,9 @@ kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture
     float py_inv = u.screen_height - px.y; 
     
     float3 color = float3(0.0);
-    int SAMPLES = 2; // 4x SSAA
+    int SAMPLES = u.samples_per_pixel;
+    if (SAMPLES < 1) SAMPLES = 1;
+    if (SAMPLES > 4) SAMPLES = 4;
     
     for (int dy = 0; dy < SAMPLES; dy++) {
         for (int dx = 0; dx < SAMPLES; dx++) {

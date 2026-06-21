@@ -15,7 +15,7 @@ public:
     virtual void SwitchDemo(int version) = 0;  // 0 = v0.2, 1 = v0.3
     virtual void LoadMesh(const MeshData& mesh) = 0;
     virtual void ClearMesh() = 0;
-    virtual void SetCheckerboard(bool enabled) = 0;
+    virtual void SetSamples(int samples) = 0;
     virtual void BeginImGuiFrame() = 0;
     virtual void OnResize(int new_width, int new_height) = 0;
     virtual void GetStats(float& outFrameTimeMs, int& outRayCount,

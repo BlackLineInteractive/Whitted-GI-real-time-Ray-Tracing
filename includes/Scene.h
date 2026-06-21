@@ -81,7 +81,6 @@ struct GPUUniforms {
     float time;
     int   enable_fog;
     int   enable_jitter;
-    int   enable_checkerboard;
-    int   checkerboard_frame;  // 0 or 1, alternates each frame
+    int   samples_per_pixel;   // e.g. 1, 2, 3 (squared for actual rays)
     int   pad_end;
 };

@@ -98,9 +98,8 @@ class RendererGL : public IRenderer {
     
     int render_width, render_height;
     GPUUniforms uniforms = {};
-    bool fog_enabled    = true;
     bool jitter_on      = false;
-    bool checkerboard   = false;
+    int  samples_per_pixel = 1;
     int  total_rays = 0;
     int  total_tris = 0;
 
@@ -173,8 +172,13 @@ public:
         render_width = width;
         render_height = height;
 
+#ifdef __APPLE__
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+#else
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+#endif
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
         gl_context = SDL_GL_CreateContext(window);
@@ -238,7 +242,7 @@ public:
 
     void ToggleFog()    override { fog_enabled = !fog_enabled; }
     void ToggleJitter() override { jitter_on = !jitter_on; }
-    void SetCheckerboard(bool on) override { checkerboard = on; }
+    void SetSamples(int samples) override { samples_per_pixel = samples; }
     void LoadMesh(const MeshData&) override { /* TODO: implement triangle SSBO upload */ }
     void ClearMesh()    override {}
     void OnResize(int w, int h) override {
@@ -276,7 +280,7 @@ public:
         uniforms.time = (float)(SDL_GetTicks() % 10000000) / 1000.0f;
         uniforms.enable_fog          = fog_enabled ? 1 : 0;
         uniforms.enable_jitter       = jitter_on ? 1 : 0;
-        uniforms.enable_checkerboard = checkerboard ? 1 : 0;
+        uniforms.samples_per_pixel   = samples_per_pixel;
 
         glBindBuffer(GL_UNIFORM_BUFFER, ubo_uniforms);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(GPUUniforms), &uniforms);
