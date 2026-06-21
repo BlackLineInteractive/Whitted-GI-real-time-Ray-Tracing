@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(Whitted_GI_RayTracer)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(USE_METAL  "Enable Metal backend (macOS only)" ON)
@@ -10,7 +10,7 @@ option(USE_VULKAN "Enable Vulkan backend"              OFF)
 
 if(APPLE AND USE_METAL)
     enable_language(OBJCXX)
-    set(CMAKE_OBJCXX_STANDARD 17)
+    set(CMAKE_OBJCXX_STANDARD 20)
 endif()
 
 # Homebrew prefix for x86 Macs (/usr/local) and Apple Silicon (/opt/homebrew)
@@ -63,15 +63,15 @@ foreach(HDR stb_image.h stb_image_write.h)
     endif()
 endforeach()
 
-# --- BVH (header-only) ---
+# --- BVH (header-only C++) ---
 FetchContent_Declare(bvh
-    GIT_REPOSITORY https://github.com/svenstaro/bvh.git
+    GIT_REPOSITORY https://github.com/madmann91/bvh.git
     GIT_TAG        master
 )
 FetchContent_MakeAvailable(bvh)
 
 set(IMGUI_DIR ${imgui_SOURCE_DIR})
-set(BVH_DIR   ${bvh_SOURCE_DIR}/include)
+set(BVH_DIR   ${bvh_SOURCE_DIR}/src)
 
 set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui.cpp

@@ -298,8 +298,36 @@ float3 schlick(float cos_theta, float n1, float n2) {
 }
 
 float3 sky_color(float3 dir) {
-    float t = 0.5 * (dir.y + 1.0);
-    return mix(float3(0.7, 0.8, 0.9), float3(0.1, 0.3, 0.6), t); 
+    float3 sun_dir = normalize(float3(0.5, 0.4, 0.7));
+    float cos_theta = dot(dir, sun_dir);
+    float angle = acos(clamp(cos_theta, -1.0, 1.0));
+    
+    // Rayleigh scattering approximation
+    float rayleigh = 0.75 * (1.0 + cos_theta * cos_theta);
+    float3 zenith_color = float3(0.15, 0.35, 0.7);
+    float3 horizon_color = float3(0.7, 0.85, 0.95);
+    
+    float t = pow(max(0.0, dir.y), 0.5);
+    float3 sky = mix(horizon_color, zenith_color, t) * rayleigh;
+    
+    // Mie scattering (Sun halo)
+    float g = 0.98;
+    float mie = (1.0 - g*g) / pow(1.0 + g*g - 2.0*g*cos_theta, 1.5);
+    sky += float3(1.0, 0.9, 0.8) * mie * 0.05;
+    
+    // Sun disk
+    float sun_angular_radius = 0.00935;
+    if (angle < sun_angular_radius) {
+        float falloff = smoothstep(sun_angular_radius, 0.0, angle);
+        sky += float3(5.0, 4.5, 3.5) * falloff; // Very bright sun
+    }
+    
+    // Ground bounce
+    if (dir.y < 0.0) {
+        sky = mix(horizon_color, float3(0.2, 0.2, 0.2), pow(-dir.y, 0.5));
+    }
+    
+    return sky;
 }
 
 float3 calc_gi(float3 p, float3 n, device const Material* materials, device const Sphere* spheres, device const Plane* planes, device const Cube* cubes, constant Uniforms& u) {

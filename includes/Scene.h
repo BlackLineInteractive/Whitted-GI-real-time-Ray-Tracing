@@ -69,6 +69,13 @@ struct GPUBVHNode {
     float aabb_max[3]; int right_or_count; // leaf: triangle count (negative = leaf)
 };
 
+// GI Needle/Surfel
+struct GPUNeedle {
+    float position[3]; float radius; // Falloff radius
+    float normal[3];   int   object_id;
+    float radiance[3]; int   pad;    // Accumulated indirect light
+};
+
 struct GPUUniforms {
     int   num_spheres, num_planes, num_cubes, num_octahedrons;
     int   num_lights,  max_depth,  num_triangles, enable_triangles;
@@ -81,6 +88,7 @@ struct GPUUniforms {
     float time;
     int   enable_fog;
     int   enable_jitter;
-    int   samples_per_pixel;   // e.g. 1, 2, 3 (squared for actual rays)
+    int   samples_per_pixel;
+    int   debug_mode; // 0=None, 1=GBuffer(Roughness), 2=GBuffer(Depth), 3=GBuffer(MatID), 4=Needles, 5=BVH/AABB
     int   pad_end;
 };

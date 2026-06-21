@@ -243,6 +243,7 @@ public:
     void ToggleFog()    override { fog_enabled = !fog_enabled; }
     void ToggleJitter() override { jitter_on = !jitter_on; }
     void SetSamples(int samples) override { samples_per_pixel = samples; }
+    void SetDebugMode(int mode) override { uniforms.debug_mode = mode; }
     void LoadMesh(const MeshData&) override { /* TODO: implement triangle SSBO upload */ }
     void ClearMesh()    override {}
     void OnResize(int w, int h) override {

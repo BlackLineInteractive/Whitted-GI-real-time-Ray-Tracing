@@ -20,6 +20,7 @@ struct Config {
     bool  enable_jitter       = false;
     int   samples             = 1;
     bool  show_primitives     = true;
+    int   debug_mode          = 0;
     std::string model_path    = "";
     float model_x = 0.0f, model_y = 0.0f, model_z = -3.0f;
 };
@@ -48,6 +49,7 @@ static Config LoadConfig() {
         else if (key == "enable_jitter")  cfg.enable_jitter       = std::stoi(val) > 0;
         else if (key == "samples")        cfg.samples             = std::stoi(val);
         else if (key == "show_primitives") cfg.show_primitives    = std::stoi(val) > 0;
+        else if (key == "debug_mode")     cfg.debug_mode          = std::stoi(val);
         else if (key == "model_path")     cfg.model_path          = val;
         else if (key == "model_x")        cfg.model_x             = std::stof(val);
         else if (key == "model_y")        cfg.model_y             = std::stof(val);
@@ -65,6 +67,7 @@ static void SaveConfig(const Config& cfg) {
     f << "enable_jitter="       << (cfg.enable_jitter ? 1 : 0) << "\n";
     f << "samples="             << cfg.samples << "\n";
     f << "show_primitives="     << (cfg.show_primitives ? 1 : 0) << "\n";
+    f << "debug_mode="          << cfg.debug_mode << "\n";
     f << "model_path="          << cfg.model_path          << "\n";
     f << "model_x="             << cfg.model_x             << "\n";
     f << "model_y="             << cfg.model_y             << "\n";
@@ -133,6 +136,7 @@ int main(int argc, char* argv[]) {
 
     // Apply initial feature states
     renderer->SetSamples(cfg.samples);
+    renderer->SetDebugMode(cfg.debug_mode);
     if (cfg.enable_jitter) renderer->ToggleJitter();
 
     // --------------------------------------- physics setup
@@ -166,6 +170,7 @@ int main(int argc, char* argv[]) {
     bool  physics_enabled = cfg.enable_physics;
     bool  jitter_on       = cfg.enable_jitter;
     int   samples         = cfg.samples;
+    int   debug_mode      = cfg.debug_mode;
     bool  mouse_captured  = true;
     int   res_w           = cfg.width;
     int   res_h           = cfg.height;
@@ -260,6 +265,11 @@ int main(int argc, char* argv[]) {
         if (ImGui::Checkbox("Jitter", &jitter_on))     renderer->ToggleJitter();
         if (ImGui::SliderInt("Samples (AA)", &samples, 1, 4))
             renderer->SetSamples(samples);
+
+        const char* debug_items[] = { "None", "G-Buffer: Mask/Roughness", "G-Buffer: Depth", "G-Buffer: Material ID", "Needles (Surfels)", "BVH Bounds" };
+        if (ImGui::Combo("Debug Mode", &debug_mode, debug_items, 6)) {
+            renderer->SetDebugMode(debug_mode);
+        }
 
         ImGui::Separator();
         // ---- Resolution

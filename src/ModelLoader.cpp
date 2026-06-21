@@ -44,72 +44,72 @@ static GPUMaterial ConvertMaterial(const aiMaterial* ai_mat) {
     return m;
 }
 
-// Simple AABB-split BVH builder (SAH-free, good enough for real-time upload)
-struct BVHBuildNode {
-    float aabb_min[3], aabb_max[3];
-    int   left = -1, right = -1;
-    int   tri_start = -1, tri_count = 0;
-};
-
-static void ComputeAABB(const std::vector<GPUTriangle>& tris,
-                        int start, int count,
-                        float out_min[3], float out_max[3]) {
-    for (int k = 0; k < 3; k++) { out_min[k] = 1e30f; out_max[k] = -1e30f; }
-    for (int i = start; i < start + count; i++) {
-        const GPUTriangle& t = tris[i];
-        for (int k = 0; k < 3; k++) {
-            out_min[k] = std::min({out_min[k], t.v0[k], t.v1[k], t.v2[k]});
-            out_max[k] = std::max({out_max[k], t.v0[k], t.v1[k], t.v2[k]});
-        }
-    }
-}
+#include <bvh/v2/bvh.h>
+#include <bvh/v2/vec.h>
+#include <bvh/v2/tri.h>
+#include <bvh/v2/default_builder.h>
 
 static void BuildBVH(std::vector<GPUTriangle>& tris,
                      std::vector<GPUBVHNode>&  nodes,
                      int start, int count, int depth = 0) {
-    GPUBVHNode node;
-    ComputeAABB(tris, start, count, node.aabb_min, node.aabb_max);
+    using Scalar = float;
+    using Vec3 = bvh::v2::Vec<Scalar, 3>;
+    using Bbox = bvh::v2::BBox<Scalar, 3>;
+    using Tri = bvh::v2::Tri<Scalar, 3>;
 
-    const int LEAF_MAX = 4;
-    if (count <= LEAF_MAX || depth >= 20) {
-        // Leaf
-        node.left_or_tri    = start;
-        node.right_or_count = -(count); // negative = leaf
-        nodes.push_back(node);
-        return;
+    std::vector<Tri> bvh_tris;
+    std::vector<Bbox> bboxes;
+    std::vector<Vec3> centers;
+    bvh_tris.reserve(count);
+    bboxes.reserve(count);
+    centers.reserve(count);
+
+    for (int i = start; i < start + count; i++) {
+        const auto& t = tris[i];
+        Vec3 v0(t.v0[0], t.v0[1], t.v0[2]);
+        Vec3 v1(t.v1[0], t.v1[1], t.v1[2]);
+        Vec3 v2(t.v2[0], t.v2[1], t.v2[2]);
+        bvh_tris.emplace_back(v0, v1, v2);
+        
+        Bbox bbox(v0);
+        bbox.extend(v1);
+        bbox.extend(v2);
+        bboxes.push_back(bbox);
+        centers.push_back(bbox.get_center());
     }
 
-    // Split along longest axis
-    int axis = 0;
-    float span = -1;
-    for (int k = 0; k < 3; k++) {
-        float s = node.aabb_max[k] - node.aabb_min[k];
-        if (s > span) { span = s; axis = k; }
+    bvh::v2::Bvh<bvh::v2::Node<Scalar, 3>> bvh = bvh::v2::DefaultBuilder<bvh::v2::Node<Scalar, 3>>::build(bboxes, centers);
+
+    // Convert to GPU format
+    std::vector<GPUTriangle> ordered_tris;
+    ordered_tris.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        ordered_tris.push_back(tris[start + bvh.prim_ids[i]]);
+    }
+    for (size_t i = 0; i < count; i++) {
+        tris[start + i] = ordered_tris[i];
     }
 
-    // Sort triangles along chosen axis by centroid
-    auto centroid = [&](const GPUTriangle& t, int ax) {
-        return (t.v0[ax] + t.v1[ax] + t.v2[ax]) / 3.0f;
-    };
-    std::sort(tris.begin() + start, tris.begin() + start + count,
-              [&](const GPUTriangle& a, const GPUTriangle& b) {
-                  return centroid(a, axis) < centroid(b, axis);
-              });
-
-    int mid = count / 2;
-    int my_idx = (int)nodes.size();
-    nodes.push_back(node); // placeholder
-
-    node.left_or_tri = (int)nodes.size();
-    BuildBVH(tris, nodes, start,       mid,         depth + 1);
-    node.right_or_count = (int)nodes.size();
-    BuildBVH(tris, nodes, start + mid, count - mid, depth + 1);
-
-    nodes[my_idx] = node;
-    // re-set AABB (placeholder had correct AABB already)
-    ComputeAABB(tris, start, count, nodes[my_idx].aabb_min, nodes[my_idx].aabb_max);
-    nodes[my_idx].left_or_tri    = node.left_or_tri;
-    nodes[my_idx].right_or_count = node.right_or_count;
+    nodes.resize(bvh.nodes.size());
+    for (size_t i = 0; i < bvh.nodes.size(); i++) {
+        const auto& n = bvh.nodes[i];
+        GPUBVHNode gn;
+        gn.aabb_min[0] = n.bounds[0];
+        gn.aabb_min[1] = n.bounds[2];
+        gn.aabb_min[2] = n.bounds[4];
+        gn.aabb_max[0] = n.bounds[1];
+        gn.aabb_max[1] = n.bounds[3];
+        gn.aabb_max[2] = n.bounds[5];
+        
+        if (n.is_leaf()) {
+            gn.left_or_tri = start + n.index.first_id();
+            gn.right_or_count = -((int)n.index.prim_count());
+        } else {
+            gn.left_or_tri = n.index.first_id();
+            gn.right_or_count = n.index.first_id() + 1; // Assuming contiguous children
+        }
+        nodes[i] = gn;
+    }
 }
 
 // --------------------------------------------------------------- public API --

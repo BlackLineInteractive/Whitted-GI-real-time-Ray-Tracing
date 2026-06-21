@@ -57,9 +57,17 @@ class RendererMetal : public IRenderer {
     id<MTLBuffer> m_buf_bvh      = nil;
     id<MTLBuffer> m_buf_mesh_mats= nil;
 
+    // Needle GI buffers
+    std::vector<GPUNeedle> m_needles_cpu;
+    id<MTLBuffer> m_buf_needles  = nil;
+
     // ImGui render pass
     MTLRenderPassDescriptor* m_rpdesc    = nil;
     id<CAMetalDrawable>      m_drawable  = nil;
+
+    // Render targets for Multi-pass
+    id<MTLTexture>           m_tex_gbuffer = nil; // RGBA16F
+    id<MTLTexture>           m_tex_color   = nil; // RGBA16F
 
     // State
     int   m_version          = 1;
@@ -133,6 +141,51 @@ class RendererMetal : public IRenderer {
         m_buf_cubes   = mkbuf(cubes.data(),   cubes.size(),   sizeof(GPUCube));
         m_buf_lights  = mkbuf(lights.data(),  lights.size(),  sizeof(GPULight));
 
+        // Generate Needles for primitives
+        m_needles_cpu.clear();
+        int obj_idx = 0;
+        auto add_needle = [&](Vec3 p, Vec3 n, float r, int id) {
+            GPUNeedle needle{};
+            set_vec3(needle.position, p);
+            set_vec3(needle.normal, n);
+            needle.radius = r;
+            needle.object_id = id;
+            set_vec3(needle.radiance, Vec3(0,0,0));
+            m_needles_cpu.push_back(needle);
+        };
+
+        for (auto& s : spheres) {
+            // Needles on 6 extremes of sphere
+            float r = s.radius;
+            Vec3 c(s.center[0], s.center[1], s.center[2]);
+            add_needle(c + Vec3(r,0,0), Vec3(1,0,0), r*1.5f, obj_idx);
+            add_needle(c + Vec3(-r,0,0), Vec3(-1,0,0), r*1.5f, obj_idx);
+            add_needle(c + Vec3(0,r,0), Vec3(0,1,0), r*1.5f, obj_idx);
+            add_needle(c + Vec3(0,-r,0), Vec3(0,-1,0), r*1.5f, obj_idx);
+            add_needle(c + Vec3(0,0,r), Vec3(0,0,1), r*1.5f, obj_idx);
+            add_needle(c + Vec3(0,0,-r), Vec3(0,0,-1), r*1.5f, obj_idx);
+            obj_idx++;
+        }
+        for (auto& cb : cubes) {
+            // Needles on 6 face centers
+            float hx = cb.half_size[0], hy = cb.half_size[1], hz = cb.half_size[2];
+            Vec3 c(cb.center[0], cb.center[1], cb.center[2]);
+            float r = std::max({hx, hy, hz}) * 2.0f;
+            add_needle(c + Vec3(hx,0,0), Vec3(1,0,0), r, obj_idx);
+            add_needle(c + Vec3(-hx,0,0), Vec3(-1,0,0), r, obj_idx);
+            add_needle(c + Vec3(0,hy,0), Vec3(0,1,0), r, obj_idx);
+            add_needle(c + Vec3(0,-hy,0), Vec3(0,-1,0), r, obj_idx);
+            add_needle(c + Vec3(0,0,hz), Vec3(0,0,1), r, obj_idx);
+            add_needle(c + Vec3(0,0,-hz), Vec3(0,0,-1), r, obj_idx);
+            obj_idx++;
+        }
+        
+        if (!m_needles_cpu.empty()) {
+            m_buf_needles = mkbuf(m_needles_cpu.data(), m_needles_cpu.size(), sizeof(GPUNeedle));
+        } else {
+            m_buf_needles = nil;
+        }
+
         m_uniforms.num_spheres   = int(spheres.size());
         m_uniforms.num_planes    = int(planes.size());
         m_uniforms.num_cubes     = int(cubes.size());
@@ -158,10 +211,27 @@ class RendererMetal : public IRenderer {
     void SyncLayerSize() {
         int dw, dh;
         SDL_Metal_GetDrawableSize(m_window, &dw, &dh);
-        m_layer.drawableSize = CGSizeMake(dw, dh);
-        m_render_w = dw;
-        m_render_h = dh;
-        std::cout << "[Metal] Drawable size: " << dw << "×" << dh << std::endl;
+        if (dw != m_render_w || dh != m_render_h) {
+            m_layer.drawableSize = CGSizeMake(dw, dh);
+            m_render_w = dw;
+            m_render_h = dh;
+            CreateRenderTargets();
+            std::cout << "[Metal] Drawable size: " << dw << "×" << dh << std::endl;
+        }
+    }
+
+    void CreateRenderTargets() {
+        if (m_render_w <= 0 || m_render_h <= 0) return;
+        
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                                                                        width:m_render_w
+                                                                                       height:m_render_h
+                                                                                    mipmapped:NO];
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+        desc.storageMode = MTLStorageModePrivate;
+        
+        m_tex_gbuffer = [m_device newTextureWithDescriptor:desc];
+        m_tex_color   = [m_device newTextureWithDescriptor:desc];
     }
 
 public:
@@ -230,6 +300,10 @@ public:
         m_samples = samples;
     }
 
+    void SetDebugMode(int mode) override {
+        m_uniforms.debug_mode = mode;
+    }
+
     void SwitchDemo(int version) override {
         m_version = version;
         SetupScene(version);
@@ -255,6 +329,42 @@ public:
         m_num_bvh_nodes  = int(mesh.bvh_nodes.size());
         m_num_mesh_mats  = int(mesh.materials.size());
         m_mesh_loaded    = true;
+        m_uniforms.enable_triangles = 1;
+
+        // Generate Needles for Mesh (Decimation using distance threshold / extreme vertices)
+        m_needles_cpu.clear();
+        float min_dist_sq = 1.0f; // Threshold for decimation
+        int obj_id = 999;
+        auto add_needle = [&](Vec3 p, Vec3 n, float r) {
+            GPUNeedle needle{};
+            set_vec3(needle.position, p);
+            set_vec3(needle.normal, n);
+            needle.radius = r;
+            needle.object_id = obj_id;
+            set_vec3(needle.radiance, Vec3(0,0,0));
+            m_needles_cpu.push_back(needle);
+        };
+
+        for (const auto& tri : mesh.triangles) {
+            Vec3 v0(tri.v0[0], tri.v0[1], tri.v0[2]);
+            Vec3 n0(tri.n0[0], tri.n0[1], tri.n0[2]);
+            
+            bool too_close = false;
+            for (const auto& nd : m_needles_cpu) {
+                Vec3 np(nd.position[0], nd.position[1], nd.position[2]);
+                if ((v0 - np).length_sq() < min_dist_sq) {
+                    too_close = true; break;
+                }
+            }
+            if (!too_close) {
+                add_needle(v0, n0, 2.0f);
+            }
+        }
+        std::cout << "[Metal] Generated " << m_needles_cpu.size() << " needles for mesh." << std::endl;
+        
+        if (!m_needles_cpu.empty()) {
+            m_buf_needles = mkbuf(m_needles_cpu.data(), m_needles_cpu.size() * sizeof(GPUNeedle));
+        }
 
         // Apply origin offset into uniforms
         m_uniforms.enable_triangles = 1;
