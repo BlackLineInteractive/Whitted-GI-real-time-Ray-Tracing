@@ -22,7 +22,6 @@ Runs on Metal (macOS), OpenGL 4.3 (cross-platform), and Vulkan (stub, requires S
 
 <p align="center">
   <img src="screenshot/4.png" width="107%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);" alt="Demo 0.4">
-  <img src="screenshot/4.5.png" width="107%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);" alt="Demo 0.4">
   <img src="screenshot/5.png" width="107%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);" alt="Demo 0.4">
 </p>
 
