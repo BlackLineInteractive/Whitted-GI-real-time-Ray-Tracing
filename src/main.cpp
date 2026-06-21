@@ -23,6 +23,7 @@ struct Config {
     int   debug_mode          = 0;
     std::string model_path    = "";
     float model_x = 0.0f, model_y = 0.0f, model_z = -3.0f;
+    float model_scale = 10.0f;
 };
 
 static std::string GetConfigPath() {
@@ -54,6 +55,7 @@ static Config LoadConfig() {
         else if (key == "model_x")        cfg.model_x             = std::stof(val);
         else if (key == "model_y")        cfg.model_y             = std::stof(val);
         else if (key == "model_z")        cfg.model_z             = std::stof(val);
+        else if (key == "model_scale")    cfg.model_scale         = std::stof(val);
     }
     return cfg;
 }
@@ -72,6 +74,7 @@ static void SaveConfig(const Config& cfg) {
     f << "model_x="             << cfg.model_x             << "\n";
     f << "model_y="             << cfg.model_y             << "\n";
     f << "model_z="             << cfg.model_z             << "\n";
+    f << "model_scale="         << cfg.model_scale         << "\n";
 }
 
 // -------------------------------------------------------------------- main --
@@ -157,7 +160,7 @@ int main(int argc, char* argv[]) {
     bool  mesh_loaded = false;
     MeshData loaded_mesh;
     if (!cfg.model_path.empty()) {
-        loaded_mesh = LoadModel(cfg.model_path);
+        loaded_mesh = LoadModel(cfg.model_path, cfg.model_scale);
         if (loaded_mesh.valid) {
             loaded_mesh.origin = {cfg.model_x, cfg.model_y, cfg.model_z};
             renderer->LoadMesh(loaded_mesh);
@@ -175,6 +178,7 @@ int main(int argc, char* argv[]) {
     int   res_w           = cfg.width;
     int   res_h           = cfg.height;
     float model_pos[3]    = {cfg.model_x, cfg.model_y, cfg.model_z};
+    float model_scale     = cfg.model_scale;
     char  model_path_buf[512] = {};
     strncpy(model_path_buf, cfg.model_path.c_str(), sizeof(model_path_buf)-1);
 
@@ -325,9 +329,12 @@ int main(int argc, char* argv[]) {
         ImGui::SetNextItemWidth(60); ImGui::InputFloat("Y", &model_pos[1], 0.1f);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(60); ImGui::InputFloat("Z", &model_pos[2], 0.1f);
+        
+        ImGui::SetNextItemWidth(80); ImGui::InputFloat("Scale", &model_scale, 0.1f);
+        ImGui::SameLine();
 
         if (ImGui::Button("Load Model") && model_path_buf[0] != '\0') {
-            MeshData md = LoadModel(std::string(model_path_buf));
+            MeshData md = LoadModel(std::string(model_path_buf), model_scale);
             if (md.valid) {
                 md.origin = {model_pos[0], model_pos[1], model_pos[2]};
                 renderer->LoadMesh(md);
@@ -337,6 +344,7 @@ int main(int argc, char* argv[]) {
                 cfg.model_x    = model_pos[0];
                 cfg.model_y    = model_pos[1];
                 cfg.model_z    = model_pos[2];
+                cfg.model_scale = model_scale;
                 SaveConfig(cfg);
             }
         }
@@ -348,9 +356,13 @@ int main(int argc, char* argv[]) {
         }
 
         // Update loaded model position in real-time
-        if (mesh_loaded) {
+        static float last_pos[3] = {-999,-999,-999};
+        if (mesh_loaded && (last_pos[0] != model_pos[0] || last_pos[1] != model_pos[1] || last_pos[2] != model_pos[2])) {
             loaded_mesh.origin = {model_pos[0], model_pos[1], model_pos[2]};
             renderer->LoadMesh(loaded_mesh);
+            last_pos[0] = model_pos[0];
+            last_pos[1] = model_pos[1];
+            last_pos[2] = model_pos[2];
         }
 
         ImGui::Separator();
@@ -379,6 +391,7 @@ int main(int argc, char* argv[]) {
     cfg.model_x = model_pos[0];
     cfg.model_y = model_pos[1];
     cfg.model_z = model_pos[2];
+    cfg.model_scale = model_scale;
     SaveConfig(cfg);
 
     renderer->Cleanup();

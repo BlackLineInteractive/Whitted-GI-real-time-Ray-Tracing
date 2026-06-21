@@ -9,12 +9,12 @@ struct Light { packed_float3 position; float intensity; packed_float3 color; flo
 
 // Triangle for mesh rendering (Möller–Trumbore)
 struct Triangle {
-    float3 v0; float pad0;
-    float3 v1; float pad1;
-    float3 v2; float pad2;
-    float3 n0; float pad3;
-    float3 n1; float pad4;
-    float3 n2; float pad5;
+    packed_float3 v0; float pad0;
+    packed_float3 v1; float pad1;
+    packed_float3 v2; float pad2;
+    packed_float3 n0; float pad3;
+    packed_float3 n1; float pad4;
+    packed_float3 n2; float pad5;
     float2 uv0;
     float2 uv1;
     float2 uv2;
@@ -23,12 +23,12 @@ struct Triangle {
 
 // Flat BVH node
 struct BVHNode {
-    float3 aabb_min; int left_or_tri;   // negative right_or_count => leaf
-    float3 aabb_max; int right_or_count;
+    packed_float3 aabb_min; int left_or_tri;   // negative right_or_count => leaf
+    packed_float3 aabb_max; int right_or_count;
 };
 
 struct Uniforms {
-    int num_spheres, num_planes, num_cubes, num_octahedrons;
+    int num_spheres, num_planes, num_cubes, num_bvh_nodes;
     int num_lights,  max_depth,  num_triangles, enable_triangles;
     float tan_half_fov, aspect_ratio, screen_width, screen_height;
     packed_float3 ambient_light; float pad2;
@@ -40,6 +40,8 @@ struct Uniforms {
     int enable_fog;
     int enable_jitter;
     int samples_per_pixel;
+    int debug_mode;
+    packed_float3 model_pos; float pad7;
     int pad_end;
 };
 
@@ -49,7 +51,7 @@ constant int MAX_STACK = 12;
 constant int DIFFUSE = 0, METAL = 1, GLASS = 2, EMISSIVE = 3, CHECKERBOARD = 4, WATER = 5, PBR = 6;
 
 struct Ray { float3 origin; float3 direction; };
-struct HitInfo { bool hit; float t; float3 point, normal; int mat_index; float2 uv; };
+struct HitInfo { bool hit; float t; float3 point, normal; int mat_index; float2 uv; bool is_mesh; };
 
 Ray make_ray(float3 o, float3 d) { return {o, normalize(d)}; }
 
@@ -77,6 +79,7 @@ HitInfo intersect_triangle(Ray ray, device const Triangle& tri) {
     info.normal  = normalize(w * tri.n0 + u * tri.n1 + v * tri.n2);
     info.uv      = w * tri.uv0 + u * tri.uv1 + v * tri.uv2;
     info.mat_index = tri.mat_index;
+    info.is_mesh = true;
     return info;
 }
 
@@ -152,6 +155,7 @@ HitInfo intersect_sphere(Ray ray, device const Sphere& s) {
             info.point = ray.origin + ray.direction * t;
             info.normal = normalize(info.point - s.center);
             info.mat_index = s.mat_index;
+            info.is_mesh = false;
             float3 pl = (info.point - s.center) / s.radius;
             info.uv = float2((atan2(pl.z, pl.x) + 3.14159) / (2.0 * 3.14159), (asin(clamp(pl.y, -1.0, 1.0)) + 1.5707) / 3.14159);
         }
@@ -169,6 +173,7 @@ HitInfo intersect_plane(Ray ray, device const Plane& p) {
             info.point = ray.origin + ray.direction * t;
             info.normal = p.normal;
             info.mat_index = p.mat_index;
+            info.is_mesh = false;
             float3 u_axis = abs(p.normal.y) > 0.9 ? float3(1,0,0) : normalize(cross(float3(0,1,0), p.normal));
             float3 v_axis = normalize(cross(p.normal, u_axis));
             info.uv = float2(dot(info.point, u_axis)*0.1, dot(info.point, v_axis)*0.1);
@@ -191,6 +196,7 @@ HitInfo intersect_cube(Ray ray, device const Cube& c) {
         info.hit = true; info.t = t;
         info.point = ray.origin + ray.direction * t;
         info.mat_index = c.mat_index;
+        info.is_mesh = false;
         float3 hr = info.point - c.center;
         float3 n = float3(0.0);
         if (abs(abs(hr.x) - c.half_size.x) < EPSILON*10.0) n.x = sign(hr.x);
@@ -211,8 +217,13 @@ HitInfo find_closest(Ray ray,
                      constant Uniforms&     u) {
     HitInfo closest; closest.hit = false; closest.t = INF;
     if (u.enable_triangles > 0) {
-        HitInfo h = intersect_bvh(ray, bvh_nodes, triangles, u.num_triangles);
-        if (h.hit && h.t < closest.t) closest = h;
+        Ray local_ray = ray;
+        local_ray.origin -= u.model_pos;
+        HitInfo h = intersect_bvh(local_ray, bvh_nodes, triangles, u.num_bvh_nodes);
+        if (h.hit && h.t < closest.t) {
+            h.point += u.model_pos;
+            closest = h;
+        }
     } else {
         for (int i = 0; i < u.num_spheres; i++) { HitInfo h = intersect_sphere(ray, spheres[i]); if (h.hit && h.t < closest.t) closest = h; }
         for (int i = 0; i < u.num_planes;  i++) { HitInfo h = intersect_plane(ray, planes[i]);   if (h.hit && h.t < closest.t) closest = h; }
@@ -374,6 +385,8 @@ float3 calc_gi(float3 p, float3 n, device const Material* materials, device cons
 float3 trace_ray(Ray ray, device const Material* materials, device const Sphere* spheres,
                  device const Plane* planes, device const Cube* cubes, device const Light* lights,
                  device const BVHNode* bvh_nodes, device const Triangle* triangles,
+                 device const Material* mesh_mats,
+                 texture2d_array<float, access::read> mesh_textures,
                  constant Uniforms& u, thread float& first_dist) {
 
     first_dist = 60.0;
@@ -405,12 +418,27 @@ float3 trace_ray(Ray ray, device const Material* materials, device const Sphere*
             continue;
         }
 
-        Material mat = materials[hit.mat_index];
+        Material mat;
+        if (hit.is_mesh) {
+            mat = mesh_mats[hit.mat_index];
+            if (mat.type != EMISSIVE) {
+                float2 uv = hit.uv;
+                uv.x = uv.x - floor(uv.x);
+                uv.y = uv.y - floor(uv.y);
+                uint2 tc = uint2(uv.x * 511.9f, (1.0f - uv.y) * 511.9f);
+                float4 tex_color = mesh_textures.read(tc, hit.mat_index);
+                mat.albedo = tex_color.xyz;
+            }
+        } else {
+            mat = materials[hit.mat_index];
+        }
+        
         result += contrib * mat.emission;
         if (mat.type == EMISSIVE) continue;
 
         float3 N = hit.normal;
         float3 V = normalize(cur.origin - hit.point);
+        if (dot(N, V) < 0.0) N = -N; // Flip normal if hitting backface
         float3 alb = mat.albedo;
 
         if (mat.type == CHECKERBOARD) {
@@ -570,6 +598,7 @@ float3 trace_ray(Ray ray, device const Material* materials, device const Sphere*
 }
 
 kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture(0)]],
+                            texture2d_array<float, access::read> mesh_textures [[texture(1)]],
                             device const Material* materials [[buffer(0)]],
                             device const Sphere*   spheres   [[buffer(1)]],
                             device const Plane*    planes    [[buffer(2)]],
@@ -578,6 +607,7 @@ kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture
                             constant Uniforms&     u         [[buffer(6)]],
                             device const Triangle* triangles [[buffer(7)]],
                             device const BVHNode*  bvh_nodes [[buffer(8)]],
+                            device const Material* mesh_mats [[buffer(9)]],
                             uint2 gid [[thread_position_in_grid]]) {
 
     if (gid.x >= uint(u.screen_width) || gid.y >= uint(u.screen_height)) return;
@@ -610,7 +640,7 @@ kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture
             Ray r = make_ray(u.camera_origin, dir);
 
             float fd = 60.0;
-            color += trace_ray(r, materials, spheres, planes, cubes, lights, bvh_nodes, triangles, u, fd);
+            color += trace_ray(r, materials, spheres, planes, cubes, lights, bvh_nodes, triangles, mesh_mats, mesh_textures, u, fd);
             if (dx == 0 && dy == 0) { center_dir = dir; center_fd = fd; }
         }
     }

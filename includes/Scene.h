@@ -77,7 +77,7 @@ struct GPUNeedle {
 };
 
 struct GPUUniforms {
-    int   num_spheres, num_planes, num_cubes, num_octahedrons;
+    int   num_spheres, num_planes, num_cubes, num_bvh_nodes;
     int   num_lights,  max_depth,  num_triangles, enable_triangles;
     float tan_half_fov, aspect_ratio, screen_width, screen_height;
     float ambient_light[3]; float pad2;
@@ -90,5 +90,6 @@ struct GPUUniforms {
     int   enable_jitter;
     int   samples_per_pixel;
     int   debug_mode; // 0=None, 1=GBuffer(Roughness), 2=GBuffer(Depth), 3=GBuffer(MatID), 4=Needles, 5=BVH/AABB
+    float model_pos[3]; float pad7;
     int   pad_end;
 };

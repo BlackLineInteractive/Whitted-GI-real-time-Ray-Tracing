@@ -68,6 +68,7 @@ class RendererMetal : public IRenderer {
     // Render targets for Multi-pass
     id<MTLTexture>           m_tex_gbuffer = nil; // RGBA16F
     id<MTLTexture>           m_tex_color   = nil; // RGBA16F
+    id<MTLTexture>           m_tex_mesh_arrays = nil;
 
     // State
     int   m_version          = 1;
@@ -325,6 +326,29 @@ public:
         m_buf_mesh_mats = mkbuf(mesh.materials.data(),
                                 mesh.materials.size() * sizeof(GPUMaterial));
 
+        if (!mesh.texture_array_data.empty()) {
+            MTLTextureDescriptor* tdesc = [MTLTextureDescriptor new];
+            tdesc.textureType = MTLTextureType2DArray;
+            tdesc.pixelFormat = MTLPixelFormatRGBA8Unorm;
+            tdesc.width = 512;
+            tdesc.height = 512;
+            tdesc.arrayLength = mesh.materials.size();
+            tdesc.usage = MTLTextureUsageShaderRead;
+            
+            m_tex_mesh_arrays = [m_device newTextureWithDescriptor:tdesc];
+            for (size_t i = 0; i < mesh.materials.size(); i++) {
+                MTLRegion region = MTLRegionMake2D(0, 0, 512, 512);
+                [m_tex_mesh_arrays replaceRegion:region
+                                     mipmapLevel:0
+                                           slice:i
+                                       withBytes:mesh.texture_array_data.data() + i * 512 * 512 * 4
+                                     bytesPerRow:512 * 4
+                                   bytesPerImage:512 * 512 * 4];
+            }
+        } else {
+            m_tex_mesh_arrays = nil;
+        }
+
         m_num_triangles  = int(mesh.triangles.size());
         m_num_bvh_nodes  = int(mesh.bvh_nodes.size());
         m_num_mesh_mats  = int(mesh.materials.size());
@@ -369,8 +393,10 @@ public:
         // Apply origin offset into uniforms
         m_uniforms.enable_triangles = 1;
         m_uniforms.num_triangles    = m_num_triangles;
+        m_uniforms.num_bvh_nodes    = m_num_bvh_nodes;
         m_uniforms.num_spheres      = 0;
         m_uniforms.num_cubes        = 0;
+        set_vec3(m_uniforms.model_pos, mesh.origin);
         std::cout << "[Metal] Mesh loaded: " << m_num_triangles << " tris, "
                   << m_num_bvh_nodes << " BVH nodes" << std::endl;
     }
@@ -449,6 +475,9 @@ public:
                 [ce setBuffer:m_buf_triangles offset:0 atIndex:7];
                 [ce setBuffer:m_buf_bvh       offset:0 atIndex:8];
                 [ce setBuffer:m_buf_mesh_mats offset:0 atIndex:9];
+                if (m_tex_mesh_arrays) {
+                    [ce setTexture:m_tex_mesh_arrays atIndex:1];
+                }
             }
             [ce dispatchThreads:MTLSizeMake(m_render_w, m_render_h, 1)
              threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
