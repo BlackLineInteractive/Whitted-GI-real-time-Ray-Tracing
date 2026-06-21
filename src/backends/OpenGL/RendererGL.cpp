@@ -98,8 +98,11 @@ class RendererGL : public IRenderer {
     
     int render_width, render_height;
     GPUUniforms uniforms = {};
-    int total_rays = 0;
-    int total_tris = 0;
+    bool fog_enabled    = true;
+    bool jitter_on      = false;
+    bool checkerboard   = false;
+    int  total_rays = 0;
+    int  total_tris = 0;
 
     void SetupScene(int version) {
         std::vector<GPUMaterial> gpu_mats;
@@ -192,9 +195,9 @@ public:
             return false;
         }
 
-        std::string src02 = ReadShaderGL("src/backends/OpenGL/shader_v02.comp");
+        std::string src02 = ReadShader("src/backends/OpenGL/shader_v02.comp");
         computeProg02 = CompileComputeShader(src02);
-        std::string src03 = ReadShaderGL("src/backends/OpenGL/shader_v03.comp");
+        std::string src03 = ReadShader("src/backends/OpenGL/shader_v03.comp");
         computeProg03 = CompileComputeShader(src03);
 
         glGenBuffers(1, &ubo_uniforms);
@@ -233,8 +236,18 @@ public:
         if (keys[SDL_SCANCODE_D]) cam_pos = cam_pos + right * speed; 
     }
 
-    void ToggleFog() override { fog_enabled = !fog_enabled; }
-    
+    void ToggleFog()    override { fog_enabled = !fog_enabled; }
+    void ToggleJitter() override { jitter_on = !jitter_on; }
+    void SetCheckerboard(bool on) override { checkerboard = on; }
+    void LoadMesh(const MeshData&) override { /* TODO: implement triangle SSBO upload */ }
+    void ClearMesh()    override {}
+    void OnResize(int w, int h) override {
+        render_width = w; render_height = h;
+        glBindTexture(GL_TEXTURE_2D, outTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
     void SwitchDemo(int version) override {
         current_version = version;
         SetupScene(version);
@@ -261,7 +274,9 @@ public:
         uniforms.camera_right[0] = right.x; uniforms.camera_right[1] = right.y; uniforms.camera_right[2] = right.z;
         uniforms.camera_up[0] = up.x; uniforms.camera_up[1] = up.y; uniforms.camera_up[2] = up.z;
         uniforms.time = (float)(SDL_GetTicks() % 10000000) / 1000.0f;
-        uniforms.enable_fog = fog_enabled ? 1 : 0;
+        uniforms.enable_fog          = fog_enabled ? 1 : 0;
+        uniforms.enable_jitter       = jitter_on ? 1 : 0;
+        uniforms.enable_checkerboard = checkerboard ? 1 : 0;
 
         glBindBuffer(GL_UNIFORM_BUFFER, ubo_uniforms);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(GPUUniforms), &uniforms);

@@ -100,16 +100,14 @@ public:
         if (keys[SDL_SCANCODE_D]) cam_pos = cam_pos + right * speed; 
     }
 
-    void ToggleFog() override { fog_enabled = !fog_enabled; }
-    
-    void SwitchDemo(int version) override {
-        current_version = version;
-        // In a full implementation, we'd recreate SSBOs and descriptor sets here.
-    }
-
-    void BeginImGuiFrame() override {
-        // ImGui_ImplVulkan_NewFrame();
-    }
+    void SwitchDemo(int version)    override {}
+    void ToggleFog()                 override {}
+    void ToggleJitter()              override {}
+    void SetCheckerboard(bool)       override {}
+    void LoadMesh(const MeshData&)   override {}
+    void ClearMesh()                 override {}
+    void OnResize(int, int)          override {}
+    void BeginImGuiFrame()           override {}
 
     void Render(float dt) override {
         // Mock rendering loop for Vulkan stub

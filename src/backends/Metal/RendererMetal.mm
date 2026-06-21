@@ -1,273 +1,385 @@
-#import <Metal/Metal.h>
-#import <QuartzCore/CAMetalLayer.h>
+#import  <Metal/Metal.h>
+#import  <QuartzCore/CAMetalLayer.h>
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_metal.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
 #include "Renderer.h"
 #include "imgui.h"
 #include "backends/imgui_impl_metal.h"
 #include "backends/imgui_impl_sdl2.h"
 
-std::string ReadShader(const std::string& path) {
-    char* basePathStr = SDL_GetBasePath();
-    std::string basePath = basePathStr ? basePathStr : "";
-    if (basePathStr) SDL_free(basePathStr);
+// ---------------------------------------------------------- shader loader ---
 
-    std::string fullPath = basePath + path;
-    std::ifstream f(fullPath);
-    if (!f.is_open()) {
-        fullPath = basePath + "../" + path;
-        f.open(fullPath);
+static std::string ReadShader(const std::string& rel_path) {
+    // Try next to the binary first, then one directory up (for build subdirs)
+    char* raw = SDL_GetBasePath();
+    std::string base = raw ? raw : "";
+    if (raw) SDL_free(raw);
+
+    for (auto prefix : {base, base + "../"}) {
+        std::ifstream f(prefix + rel_path);
+        if (f.is_open()) {
+            std::stringstream ss; ss << f.rdbuf(); return ss.str();
+        }
     }
-    if (!f.is_open()) {
-        std::cerr << "Failed to find shader file: " << path << std::endl;
-        return "";
-    }
-    std::stringstream buffer;
-    buffer << f.rdbuf();
-    return buffer.str();
+    std::cerr << "[Metal] Cannot find shader: " << rel_path << std::endl;
+    return "";
 }
 
+// --------------------------------------------------------- Metal Renderer ---
+
 class RendererMetal : public IRenderer {
-    SDL_Window* window = nullptr;
-    CAMetalLayer* metalLayer = nullptr;
-    id<MTLDevice> device = nil;
-    id<MTLCommandQueue> commandQueue = nil;
-    
-    id<MTLComputePipelineState> pipelineState02 = nil;
-    id<MTLComputePipelineState> pipelineState03 = nil;
-    
-    id<MTLBuffer> buf_mats = nil;
-    id<MTLBuffer> buf_spheres = nil;
-    id<MTLBuffer> buf_planes = nil;
-    id<MTLBuffer> buf_cubes = nil;
-    id<MTLBuffer> buf_lights = nil;
-    id<MTLBuffer> buf_uniforms = nil;
+    // Window / layer
+    SDL_Window*     m_window      = nullptr;
+    SDL_MetalView   m_metal_view  = nullptr;
+    CAMetalLayer*   m_layer       = nil;
+    id<MTLDevice>          m_device       = nil;
+    id<MTLCommandQueue>    m_queue        = nil;
 
-    MTLRenderPassDescriptor* renderPassDescriptor = nil;
-    id<CAMetalDrawable> currentDrawable = nil;
-    
-    int current_version = 1;
-    bool fog_enabled = true;
-    Vec3 cam_pos;
-    double cam_yaw = 0.0, cam_pitch = 0.0;
-    
-    int render_width, render_height;
-    
-    GPUUniforms uniforms = {};
-    int total_rays = 0;
-    int total_tris = 0;
+    // Pipeline states (one per demo version)
+    id<MTLComputePipelineState> m_pipeline02 = nil;
+    id<MTLComputePipelineState> m_pipeline03 = nil;
 
+    // Scene GPU buffers (primitives)
+    id<MTLBuffer> m_buf_mats     = nil;
+    id<MTLBuffer> m_buf_spheres  = nil;
+    id<MTLBuffer> m_buf_planes   = nil;
+    id<MTLBuffer> m_buf_cubes    = nil;
+    id<MTLBuffer> m_buf_lights   = nil;
+    id<MTLBuffer> m_buf_uniforms = nil;
+
+    // Mesh GPU buffers
+    id<MTLBuffer> m_buf_triangles = nil;
+    id<MTLBuffer> m_buf_bvh      = nil;
+    id<MTLBuffer> m_buf_mesh_mats= nil;
+
+    // ImGui render pass
+    MTLRenderPassDescriptor* m_rpdesc    = nil;
+    id<CAMetalDrawable>      m_drawable  = nil;
+
+    // State
+    int   m_version          = 1;
+    bool  m_fog              = true;
+    bool  m_jitter           = false;
+    bool  m_checkerboard     = false;
+    int   m_checkerboard_frame = 0;
+    bool  m_mesh_loaded      = false;
+    int   m_render_w         = 0;
+    int   m_render_h         = 0;
+    int   m_num_triangles    = 0;
+    int   m_num_bvh_nodes    = 0;
+    int   m_num_mesh_mats    = 0;
+
+    GPUUniforms m_uniforms   = {};
+    Vec3        m_cam_pos    = {0, 1.0, 2.0};
+    double      m_yaw        = 0.0;
+    double      m_pitch      = 0.0;
+
+    int m_total_rays = 0;
+
+    // ------------------------------------------------- scene setup
     void SetupScene(int version) {
-        std::vector<GPUMaterial> gpu_mats;
-        auto add_mat = [&](const Material& m)->int {
-            GPUMaterial gm;
-            set_vec3(gm.albedo, m.albedo); gm.roughness = (float)m.roughness;
-            set_vec3(gm.emission, m.emission); gm.metallic = (float)m.metallic;
-            set_vec3(gm.albedo2, m.albedo2); gm.refractive_index = (float)m.refractive_index;
-            gm.type = m.type; gm.pad1=gm.pad2=gm.pad3=0;
-            gpu_mats.push_back(gm); return (int)gpu_mats.size()-1;
+        // Materials
+        std::vector<GPUMaterial> mats;
+        auto addm = [&](const Material& m) -> int {
+            GPUMaterial gm{};
+            set_vec3(gm.albedo, m.albedo);
+            gm.roughness = float(m.roughness);
+            set_vec3(gm.emission, m.emission);
+            gm.metallic         = float(m.metallic);
+            set_vec3(gm.albedo2, m.albedo2);
+            gm.refractive_index = float(m.refractive_index);
+            gm.type             = int(m.type);
+            mats.push_back(gm); return int(mats.size()) - 1;
         };
 
-        Material floor_mat(CHECKERBOARD, {0.8,0.8,0.8}, {0,0,0}, 0.8, 0.0, 1.0, {0.2,0.2,0.2});
-        Material chrome_mat(METAL, {0.9,0.9,0.95}, {0,0,0}, 0.05, 1.0);
-        Material glass_mat(GLASS, {0.98,0.99,1.0}, {0,0,0}, 0.0, 0.0, 1.5);
-        Material red_mat(DIFFUSE, {0.8,0.15,0.1}, {0,0,0}, 0.9, 0.0);
-        Material blue_emit(EMISSIVE, {0,0,0}, {0.3,0.5,2.0}, 1.0, 0.0);
-        Material water_mat(WATER, {0.0, 0.3, 0.4}, {0,0,0}, 0.0, 0.0, 1.33, {0,0,0});
+        int i_floor  = addm(Material(CHECKERBOARD, {0.8,0.8,0.8}, {0,0,0}, 0.8, 0.0, 1.0, {0.2,0.2,0.2}));
+        int i_chrome = addm(Material(METAL,        {0.9,0.9,0.95},{0,0,0}, 0.05,1.0));
+        int i_glass  = addm(Material(GLASS,        {0.98,0.99,1.0},{0,0,0},0.0, 0.0, 1.5));
+        int i_red    = addm(Material(DIFFUSE,      {0.8,0.15,0.1},{0,0,0}, 0.9, 0.0));
+        int i_blue   = addm(Material(EMISSIVE,     {0,0,0},{0.3,0.5,2.0}, 1.0, 0.0));
+        int i_water  = addm(Material(WATER,        {0.0,0.3,0.4},{0,0,0},  0.0, 0.0, 1.33));
 
-        int i_floor = add_mat(floor_mat); int i_chrome = add_mat(chrome_mat);
-        int i_glass = add_mat(glass_mat); int i_red = add_mat(red_mat); 
-        int i_blue = add_mat(blue_emit); int i_water = add_mat(water_mat);
+        std::vector<GPUPlane> planes;
+        if (version == 1)
+            planes = {{{0,1,0},-1.0f,i_floor,0,0,0},{{0,1,0},-0.85f,i_water,0,0,0}};
+        else
+            planes = {{{0,1,0},-1.0f,i_floor,0,0,0}};
 
-        std::vector<GPUPlane> gpu_planes;
-        if (version == 1) {
-            gpu_planes = {{{0,1,0}, -1.0f, i_floor, 0,0,0}, {{0,1,0}, -0.85f, i_water, 0,0,0}};
-        } else {
-            gpu_planes = {{{0,1,0}, -1.0f, i_floor, 0,0,0}};
-        }
-
-        std::vector<GPUSphere> gpu_spheres = {
-            {{-2.0f, 0.0f, -5.0f}, 1.0f, i_chrome, 0,0,0},
-            {{ 0.0f, 0.2f, -4.5f}, 1.2f, i_glass, 0,0,0},
-            {{ 1.5f, 0.5f, -3.5f}, 0.3f, i_blue, 0,0,0}
+        std::vector<GPUSphere> spheres = {
+            {{-2.0f, 0.0f,-5.0f},1.0f,i_chrome,0,0,0},
+            {{ 0.0f, 0.2f,-4.5f},1.2f,i_glass, 0,0,0},
+            {{ 1.5f, 0.5f,-3.5f},0.3f,i_blue,  0,0,0}
         };
-        std::vector<GPUCube> gpu_cubes = {{{1.5f, -0.5f, -6.0f}, 0, {0.5f,0.5f,0.5f}, i_red}};
-        std::vector<GPULight> gpu_lights = {
-            {{-5.0f, 8.0f, -2.0f}, 50.0f, {1.0f, 0.95f, 0.9f}, 2.0f},
-            {{ 1.5f, 0.5f, -3.5f}, 15.0f, {0.3f, 0.5f, 1.0f}, 0.2f}
+        std::vector<GPUCube> cubes  = {{{1.5f,-0.5f,-6.0f},0,{0.5f,0.5f,0.5f},i_red}};
+        std::vector<GPULight> lights = {
+            {{-5.0f,8.0f,-2.0f},50.0f,{1.0f,0.95f,0.9f},2.0f},
+            {{ 1.5f,0.5f,-3.5f},15.0f,{0.3f,0.5f,1.0f}, 0.2f}
         };
 
-        auto createBuf = [&](const void* data, size_t count, size_t elem_size) {
-            size_t bytes = std::max(count * elem_size, elem_size);
-            if (data == nullptr || count == 0) return [device newBufferWithLength:bytes options:MTLResourceStorageModeManaged];
-            return [device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeManaged];
+        auto mkbuf = [&](const void* data, size_t n, size_t sz) -> id<MTLBuffer> {
+            size_t bytes = std::max(n * sz, sz);
+            if (!data || n == 0)
+                return [m_device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+            return [m_device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];
         };
 
-        buf_mats    = createBuf(gpu_mats.data(), gpu_mats.size(), sizeof(GPUMaterial));
-        buf_spheres = createBuf(gpu_spheres.data(), gpu_spheres.size(), sizeof(GPUSphere));
-        buf_planes  = createBuf(gpu_planes.data(), gpu_planes.size(), sizeof(GPUPlane));
-        buf_cubes   = createBuf(gpu_cubes.data(), gpu_cubes.size(), sizeof(GPUCube));
-        buf_lights  = createBuf(gpu_lights.data(), gpu_lights.size(), sizeof(GPULight));
-        
-        uniforms.num_spheres = gpu_spheres.size();
-        uniforms.num_planes = gpu_planes.size();
-        uniforms.num_cubes = gpu_cubes.size();
-        uniforms.num_octahedrons = 0;
-        uniforms.num_lights = gpu_lights.size();
-        
-        total_rays = render_width * render_height * 4 * 7; // Approx SSAAx4 * Depth
-        total_tris = 0; // Analytic!
+        m_buf_mats    = mkbuf(mats.data(),    mats.size(),    sizeof(GPUMaterial));
+        m_buf_spheres = mkbuf(spheres.data(), spheres.size(), sizeof(GPUSphere));
+        m_buf_planes  = mkbuf(planes.data(),  planes.size(),  sizeof(GPUPlane));
+        m_buf_cubes   = mkbuf(cubes.data(),   cubes.size(),   sizeof(GPUCube));
+        m_buf_lights  = mkbuf(lights.data(),  lights.size(),  sizeof(GPULight));
+
+        m_uniforms.num_spheres   = int(spheres.size());
+        m_uniforms.num_planes    = int(planes.size());
+        m_uniforms.num_cubes     = int(cubes.size());
+        m_uniforms.num_lights    = int(lights.size());
+        m_uniforms.enable_triangles = 0;
+        m_mesh_loaded = false;
+        m_num_triangles = 0;
+
+        m_total_rays = m_render_w * m_render_h * 4 * 7;
+    }
+
+    id<MTLComputePipelineState> CompileKernel(const std::string& path, NSError** err) {
+        std::string src = ReadShader(path);
+        if (src.empty()) return nil;
+        NSString* ns_src = [NSString stringWithUTF8String:src.c_str()];
+        id<MTLLibrary> lib = [m_device newLibraryWithSource:ns_src options:nil error:err];
+        if (!lib) return nil;
+        id<MTLFunction> fn = [lib newFunctionWithName:@"raytrace_kernel"];
+        if (!fn) { std::cerr << "[Metal] raytrace_kernel not found in " << path << std::endl; return nil; }
+        return [m_device newComputePipelineStateWithFunction:fn error:err];
+    }
+
+    void SyncLayerSize() {
+        int dw, dh;
+        SDL_Metal_GetDrawableSize(m_window, &dw, &dh);
+        m_layer.drawableSize = CGSizeMake(dw, dh);
+        m_render_w = dw;
+        m_render_h = dh;
+        std::cout << "[Metal] Drawable size: " << dw << "×" << dh << std::endl;
     }
 
 public:
+    // ------------------------------------------------- Init
     bool Init(SDL_Window* win, int width, int height) override {
-        window = win;
-        render_width = width;
-        render_height = height;
+        m_window   = win;
+        m_render_w = width;
+        m_render_h = height;
 
-        device = MTLCreateSystemDefaultDevice();
-        if (!device) return false;
+        m_device = MTLCreateSystemDefaultDevice();
+        if (!m_device) { std::cerr << "[Metal] No device" << std::endl; return false; }
 
-        metalLayer = (__bridge CAMetalLayer*)SDL_Metal_GetLayer(SDL_Metal_CreateView(window));
-        metalLayer.device = device;
-        metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        metalLayer.framebufferOnly = NO; // Needed for compute shader write
+        m_metal_view = SDL_Metal_CreateView(win);
+        m_layer = (__bridge CAMetalLayer*)SDL_Metal_GetLayer(m_metal_view);
+        m_layer.device      = m_device;
+        m_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        m_layer.framebufferOnly = NO;  // allow compute shader writes
+        SyncLayerSize();
 
-        commandQueue = [device newCommandQueue];
-        
-        renderPassDescriptor = [MTLRenderPassDescriptor new];
+        m_queue = [m_device newCommandQueue];
+        m_rpdesc = [MTLRenderPassDescriptor new];
 
-        // Compile shaders
-        NSError* error = nil;
-        NSString* src02 = [NSString stringWithUTF8String:ReadShader("src/backends/Metal/shader_v02.metal").c_str()];
-        id<MTLLibrary> lib02 = [device newLibraryWithSource:src02 options:nil error:&error];
-        if (!lib02) { std::cerr << "Shader 0.2 Error: " << [[error localizedDescription] UTF8String] << std::endl; return false; }
-        pipelineState02 = [device newComputePipelineStateWithFunction:[lib02 newFunctionWithName:@"raytrace_kernel"] error:&error];
+        NSError* err = nil;
+        m_pipeline02 = CompileKernel("src/backends/Metal/shader_v02.metal", &err);
+        if (!m_pipeline02) {
+            std::cerr << "[Metal] Shader v02: " << (err ? [[err localizedDescription] UTF8String] : "?") << std::endl;
+            return false;
+        }
+        m_pipeline03 = CompileKernel("src/backends/Metal/shader_v03.metal", &err);
+        if (!m_pipeline03) {
+            std::cerr << "[Metal] Shader v03: " << (err ? [[err localizedDescription] UTF8String] : "?") << std::endl;
+            return false;
+        }
 
-        NSString* src03 = [NSString stringWithUTF8String:ReadShader("src/backends/Metal/shader_v03.metal").c_str()];
-        id<MTLLibrary> lib03 = [device newLibraryWithSource:src03 options:nil error:&error];
-        if (!lib03) { std::cerr << "Shader 0.3 Error: " << [[error localizedDescription] UTF8String] << std::endl; return false; }
-        pipelineState03 = [device newComputePipelineStateWithFunction:[lib03 newFunctionWithName:@"raytrace_kernel"] error:&error];
+        m_buf_uniforms = [m_device newBufferWithLength:sizeof(GPUUniforms)
+                                               options:MTLResourceStorageModeShared];
 
-        buf_uniforms = [device newBufferWithLength:sizeof(GPUUniforms) options:MTLResourceStorageModeManaged];
-
-        ImGui_ImplSDL2_InitForMetal(window);
-        ImGui_ImplMetal_Init(device);
-        cam_pos = Vec3(0, 1.0, 2.0);
-
+        ImGui_ImplSDL2_InitForMetal(win);
+        ImGui_ImplMetal_Init(m_device);
         return true;
     }
 
+    // ------------------------------------------------- Input
     void ProcessInput(const Uint8* keys, int mx, int my, float dt) override {
-        cam_yaw -= mx * 0.003; 
-        cam_pitch -= my * 0.003;
-        cam_pitch = std::clamp(cam_pitch, -1.5, 1.5);
-        
-        Vec3 fwd(cos(cam_yaw)*cos(cam_pitch), sin(cam_pitch), sin(cam_yaw)*cos(cam_pitch));
-        Vec3 right = Vec3(0,1,0).cross(fwd).normalize(); 
-        Vec3 flat_fwd = Vec3(0,1,0).cross(right).normalize(); // Fixed WASD by negating cross result or using it correctly
-        
-        // Corrected WASD
-        float speed = 3.0 * dt;
-        if (keys[SDL_SCANCODE_W]) cam_pos = cam_pos - flat_fwd * speed; // Was inverted (+), now correctly minus flat_fwd (assuming -Z is forward)
-        if (keys[SDL_SCANCODE_S]) cam_pos = cam_pos + flat_fwd * speed;
-        if (keys[SDL_SCANCODE_A]) cam_pos = cam_pos - right * speed; // Left is -X
-        if (keys[SDL_SCANCODE_D]) cam_pos = cam_pos + right * speed; // Right is +X
+        m_yaw   -= mx * 0.003;
+        m_pitch -= my * 0.003;
+        m_pitch  = std::clamp(m_pitch, -1.5, 1.5);
+
+        Vec3 fwd(cos(m_yaw)*cos(m_pitch), sin(m_pitch), sin(m_yaw)*cos(m_pitch));
+        Vec3 right = Vec3(0,1,0).cross(fwd).normalize();
+        Vec3 flat  = Vec3(0,1,0).cross(right).normalize();
+
+        float spd = 3.0f * dt;
+        if (keys[SDL_SCANCODE_W]) m_cam_pos = m_cam_pos - flat  * spd;
+        if (keys[SDL_SCANCODE_S]) m_cam_pos = m_cam_pos + flat  * spd;
+        if (keys[SDL_SCANCODE_A]) m_cam_pos = m_cam_pos - right * spd;
+        if (keys[SDL_SCANCODE_D]) m_cam_pos = m_cam_pos + right * spd;
+        if (keys[SDL_SCANCODE_Q]) m_cam_pos.y -= spd;
+        if (keys[SDL_SCANCODE_E]) m_cam_pos.y += spd;
     }
 
-    void ToggleFog() override { fog_enabled = !fog_enabled; }
-    
+    void ToggleFog()     override { m_fog    = !m_fog; }
+    void ToggleJitter()  override { m_jitter = !m_jitter; }
+
+    void SetCheckerboard(bool on) override {
+        m_checkerboard = on;
+        m_checkerboard_frame = 0;
+    }
+
     void SwitchDemo(int version) override {
-        current_version = version;
+        m_version = version;
         SetupScene(version);
     }
 
-    void BeginImGuiFrame() override {
-        @autoreleasepool {
-            currentDrawable = [metalLayer nextDrawable];
-            if (!currentDrawable) return;
+    // ------------------------------------------------- Mesh loading
+    void LoadMesh(const MeshData& mesh) override {
+        if (!mesh.valid || mesh.triangles.empty()) return;
 
-            renderPassDescriptor.colorAttachments[0].texture = currentDrawable.texture;
-            renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
-            renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+        auto mkbuf = [&](const void* data, size_t bytes) -> id<MTLBuffer> {
+            return [m_device newBufferWithBytes:data length:bytes
+                                       options:MTLResourceStorageModeShared];
+        };
 
-            ImGui_ImplMetal_NewFrame(renderPassDescriptor);
-        }
+        m_buf_triangles = mkbuf(mesh.triangles.data(),
+                                mesh.triangles.size() * sizeof(GPUTriangle));
+        m_buf_bvh       = mkbuf(mesh.bvh_nodes.data(),
+                                mesh.bvh_nodes.size() * sizeof(GPUBVHNode));
+        m_buf_mesh_mats = mkbuf(mesh.materials.data(),
+                                mesh.materials.size() * sizeof(GPUMaterial));
+
+        m_num_triangles  = int(mesh.triangles.size());
+        m_num_bvh_nodes  = int(mesh.bvh_nodes.size());
+        m_num_mesh_mats  = int(mesh.materials.size());
+        m_mesh_loaded    = true;
+
+        // Apply origin offset into uniforms
+        m_uniforms.enable_triangles = 1;
+        m_uniforms.num_triangles    = m_num_triangles;
+        m_uniforms.num_spheres      = 0;
+        m_uniforms.num_cubes        = 0;
+        std::cout << "[Metal] Mesh loaded: " << m_num_triangles << " tris, "
+                  << m_num_bvh_nodes << " BVH nodes" << std::endl;
     }
 
+    void ClearMesh() override {
+        m_mesh_loaded = false;
+        m_buf_triangles = nil;
+        m_buf_bvh       = nil;
+        m_buf_mesh_mats = nil;
+        m_num_triangles = 0;
+        m_uniforms.enable_triangles = 0;
+        m_uniforms.num_triangles    = 0;
+    }
+
+    // ------------------------------------------------- OnResize
+    void OnResize(int w, int h) override {
+        m_render_w = w;
+        m_render_h = h;
+        SyncLayerSize();
+    }
+
+    // ------------------------------------------------- BeginImGuiFrame
+    void BeginImGuiFrame() override {
+        m_drawable = [[m_layer nextDrawable] retain];
+        if (!m_drawable) return;
+
+        m_rpdesc.colorAttachments[0].texture     = m_drawable.texture;
+        m_rpdesc.colorAttachments[0].loadAction  = MTLLoadActionLoad;
+        m_rpdesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+        ImGui_ImplMetal_NewFrame(m_rpdesc);
+    }
+
+    // ------------------------------------------------- Render
     void Render(float dt) override {
         @autoreleasepool {
-            if (!currentDrawable) return;
-            id<CAMetalDrawable> drawable = currentDrawable;
+            if (!m_drawable) return;
+            id<CAMetalDrawable> drawable = m_drawable;
 
+            // Update uniforms
+            Vec3 fwd(cos(m_yaw)*cos(m_pitch), sin(m_pitch), sin(m_yaw)*cos(m_pitch));
+            Vec3 right = Vec3(0,1,0).cross(fwd).normalize();
+            Vec3 up    = fwd.cross(right).normalize();
 
-            // Update Uniforms
-            Vec3 fwd(cos(cam_yaw)*cos(cam_pitch), sin(cam_pitch), sin(cam_yaw)*cos(cam_pitch));
-            Vec3 right = Vec3(0,1,0).cross(fwd).normalize(); 
-            Vec3 up = fwd.cross(right).normalize();
+            m_uniforms.max_depth     = 7;
+            m_uniforms.tan_half_fov  = float(tan((60.0*M_PI/180.0) / 2.0));
+            m_uniforms.aspect_ratio  = float(m_render_w) / float(m_render_h);
+            m_uniforms.screen_width  = float(m_render_w);
+            m_uniforms.screen_height = float(m_render_h);
+            set_vec3(m_uniforms.ambient_light, {0.3, 0.4, 0.6});
+            set_vec3(m_uniforms.camera_origin,  m_cam_pos);
+            set_vec3(m_uniforms.camera_forward, fwd);
+            set_vec3(m_uniforms.camera_right,   right);
+            set_vec3(m_uniforms.camera_up,      up);
+            m_uniforms.time = float(SDL_GetTicks() % 10000000) / 1000.0f;
+            m_uniforms.enable_fog          = m_fog ? 1 : 0;
+            m_uniforms.enable_jitter       = m_jitter ? 1 : 0;
+            m_uniforms.enable_checkerboard = m_checkerboard ? 1 : 0;
+            m_uniforms.checkerboard_frame  = m_checkerboard_frame;
 
-            uniforms.max_depth = 7;
-            uniforms.tan_half_fov = std::tan((60.0*PI/180.0) / 2.0);
-            uniforms.aspect_ratio = (float)render_width / render_height;
-            uniforms.screen_width = render_width; 
-            uniforms.screen_height = render_height;
-            set_vec3(uniforms.ambient_light, {0.3, 0.4, 0.6}); 
-            
-            uniforms.camera_origin[0] = cam_pos.x; uniforms.camera_origin[1] = cam_pos.y; uniforms.camera_origin[2] = cam_pos.z;
-            uniforms.camera_forward[0] = fwd.x; uniforms.camera_forward[1] = fwd.y; uniforms.camera_forward[2] = fwd.z;
-            uniforms.camera_right[0] = right.x; uniforms.camera_right[1] = right.y; uniforms.camera_right[2] = right.z;
-            uniforms.camera_up[0] = up.x; uniforms.camera_up[1] = up.y; uniforms.camera_up[2] = up.z;
-            uniforms.time = (float)(SDL_GetTicks() % 10000000) / 1000.0f;
-            uniforms.enable_fog = fog_enabled ? 1 : 0;
+            memcpy([m_buf_uniforms contents], &m_uniforms, sizeof(GPUUniforms));
 
-            memcpy([buf_uniforms contents], &uniforms, sizeof(GPUUniforms));
-            [buf_uniforms didModifyRange:NSMakeRange(0, buf_uniforms.length)];
+            id<MTLCommandBuffer> cmd = [m_queue commandBuffer];
 
-            id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
-            
-            // Compute Pass
-            id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
-            [computeEncoder setComputePipelineState:(current_version == 0 ? pipelineState02 : pipelineState03)];
-            [computeEncoder setTexture:drawable.texture atIndex:0];
-            [computeEncoder setBuffer:buf_mats offset:0 atIndex:0]; 
-            [computeEncoder setBuffer:buf_spheres offset:0 atIndex:1];
-            [computeEncoder setBuffer:buf_planes offset:0 atIndex:2]; 
-            [computeEncoder setBuffer:buf_cubes offset:0 atIndex:3];
-            [computeEncoder setBuffer:buf_lights offset:0 atIndex:5];
-            [computeEncoder setBuffer:buf_uniforms offset:0 atIndex:6];
-            [computeEncoder dispatchThreads:MTLSizeMake(render_width, render_height, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
-            [computeEncoder endEncoding];
+            // --- Compute pass (ray tracing)
+            id<MTLComputePipelineState> ps = (m_version == 0) ? m_pipeline02 : m_pipeline03;
+            id<MTLComputeCommandEncoder> ce = [cmd computeCommandEncoder];
+            [ce setComputePipelineState:ps];
+            [ce setTexture:drawable.texture atIndex:0];
+            [ce setBuffer:m_buf_mats     offset:0 atIndex:0];
+            [ce setBuffer:m_buf_spheres  offset:0 atIndex:1];
+            [ce setBuffer:m_buf_planes   offset:0 atIndex:2];
+            [ce setBuffer:m_buf_cubes    offset:0 atIndex:3];
+            // atIndex:4 reserved for octahedrons
+            [ce setBuffer:m_buf_lights   offset:0 atIndex:5];
+            [ce setBuffer:m_buf_uniforms offset:0 atIndex:6];
+            if (m_mesh_loaded && m_buf_triangles) {
+                [ce setBuffer:m_buf_triangles offset:0 atIndex:7];
+                [ce setBuffer:m_buf_bvh       offset:0 atIndex:8];
+                [ce setBuffer:m_buf_mesh_mats offset:0 atIndex:9];
+            }
+            [ce dispatchThreads:MTLSizeMake(m_render_w, m_render_h, 1)
+             threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
+            [ce endEncoding];
 
-            // Render Pass (ImGui)
-            renderPassDescriptor.colorAttachments[0].texture = drawable.texture;
-            renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
-            renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-            
-            id<MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
-            ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), commandBuffer, renderEncoder);
-            [renderEncoder endEncoding];
+            // --- Render pass (ImGui overlay)
+            m_rpdesc.colorAttachments[0].texture     = drawable.texture;
+            m_rpdesc.colorAttachments[0].loadAction  = MTLLoadActionLoad;
+            m_rpdesc.colorAttachments[0].storeAction = MTLStoreActionStore;
 
-            [commandBuffer presentDrawable:drawable];
-            [commandBuffer commit];
-            currentDrawable = nil;
+            id<MTLRenderCommandEncoder> re = [cmd renderCommandEncoderWithDescriptor:m_rpdesc];
+            ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmd, re);
+            [re endEncoding];
+
+            [cmd presentDrawable:drawable];
+            [cmd commit];
+
+            [m_drawable release];
+            m_drawable = nil;
+
+            if (m_checkerboard) m_checkerboard_frame ^= 1;
         }
     }
 
-    void GetStats(float& outFrameTimeMs, int& outRayCount, int& outTriCount, float& outGpuTimeMs) override {
-        outRayCount = total_rays;
-        outTriCount = total_tris;
-        outGpuTimeMs = 0.0f; // Approx or unmeasured for now
+    // ------------------------------------------------- Stats
+    void GetStats(float& ft, int& rays, int& tris, float& gpt) override {
+        ft   = 0;
+        rays = m_total_rays;
+        tris = m_num_triangles;
+        gpt  = 0;
     }
 
+    // ------------------------------------------------- Cleanup
     void Cleanup() override {
         ImGui_ImplMetal_Shutdown();
         ImGui_ImplSDL2_Shutdown();
+        if (m_metal_view) SDL_Metal_DestroyView(m_metal_view);
     }
 };
 
-IRenderer* CreateRendererMetal() {
-    return new RendererMetal();
-}
+IRenderer* CreateRendererMetal() { return new RendererMetal(); }
