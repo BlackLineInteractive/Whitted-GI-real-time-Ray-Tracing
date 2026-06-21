@@ -6,11 +6,13 @@ Runs on Metal (macOS), OpenGL 4.3 (cross-platform), and Vulkan (stub, requires S
 
 ---
 
-## Screenshots
-
-| Demo 0.2 | Demo 0.3 (water + fog) |
-|:---:|:---:|
-| ![demo02](screenshot/2.png) | ![demo03](screenshot/3.5.png) |
+<p align="center">
+  <img src="screenshot/2.png" width="48%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);" alt="Demo 0.2">
+  <img src="screenshot/3.5.png" width="48%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);" alt="Demo 0.3">
+</p>
+<p align="center">
+  <em>Left: Demo 0.2 (Spheres & Global Illumination) &nbsp;&nbsp;|&nbsp;&nbsp; Right: Demo 0.3 (Procedural Water & Fog)</em>
+</p>
 
 ---
 
