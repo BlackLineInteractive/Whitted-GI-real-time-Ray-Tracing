@@ -8,6 +8,7 @@ Runs on Metal (macOS), OpenGL 4.3 (cross-platform), and Vulkan (stub, requires S
 
 <p align="center">
   <img src="screenshot/2.png" width="90%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);" alt="Demo 0.2">
+  <img src="screenshot/3.png" width="90%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);" alt="Demo 0.3">
   <img src="screenshot/3.5.png" width="90%" style="border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);" alt="Demo 0.3">
 </p>
 <p align="center">
