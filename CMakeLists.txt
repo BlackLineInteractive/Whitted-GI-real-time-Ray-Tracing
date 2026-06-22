@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(USE_METAL  "Enable Metal backend (macOS only)" ON)
-option(USE_OPENGL "Enable OpenGL backend"              ON)
+option(USE_OPENGL "Enable OpenGL backend"              OFF)
 option(USE_VULKAN "Enable Vulkan backend"              OFF)
 
 if(APPLE AND USE_METAL)
