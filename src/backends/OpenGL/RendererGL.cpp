@@ -240,12 +240,23 @@ public:
         if (keys[SDL_SCANCODE_D]) cam_pos = cam_pos + right * speed; 
     }
 
-    void ToggleFog()    override { fog_enabled = !fog_enabled; }
-    void ToggleJitter() override { jitter_on = !jitter_on; }
-    void SetSamples(int samples) override { samples_per_pixel = samples; }
-    void SetDebugMode(int mode) override { uniforms.debug_mode = mode; }
+    void ToggleFog() override { fog_enabled = !fog_enabled; }
+    void SwitchDemo(int version) override {
+        current_version = version;
+        SetupScene(version);
+    }
     void LoadMesh(const MeshData&) override { /* TODO: implement triangle SSBO upload */ }
-    void ClearMesh()    override {}
+    void ClearMesh() override {
+        uniforms.enable_triangles = 0;
+    }
+
+    void SetMeshOrigin(float x, float y, float z) override {
+        uniforms.model_pos[0] = x;
+        uniforms.model_pos[1] = y;
+        uniforms.model_pos[2] = z;
+    }
+
+    void SetSamples(int samples) override { samples_per_pixel = samples; }
     void OnResize(int w, int h) override {
         render_width = w; render_height = h;
         glBindTexture(GL_TEXTURE_2D, outTexture);

@@ -12,6 +12,11 @@
 #include "backends/imgui_impl_metal.h"
 #include "backends/imgui_impl_sdl2.h"
 
+// MetalFX only available on macOS 13+
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
+#import <MetalFX/MetalFX.h>
+#endif
+
 // ---------------------------------------------------------- shader loader ---
 
 static std::string ReadShader(const std::string& rel_path) {
@@ -62,18 +67,19 @@ class RendererMetal : public IRenderer {
     id<MTLBuffer> m_buf_bvh      = nil;
     id<MTLBuffer> m_buf_mesh_mats= nil;
 
-    // Needle GI buffers
-    std::vector<GPUNeedle> m_needles_cpu;
-    id<MTLBuffer> m_buf_needles  = nil;
-
     // ImGui render pass
     MTLRenderPassDescriptor* m_rpdesc    = nil;
     id<CAMetalDrawable>      m_drawable  = nil;
 
-    // Render targets for Multi-pass
-    id<MTLTexture>           m_tex_gbuffer = nil; // RGBA16F
-    id<MTLTexture>           m_tex_color   = nil; // RGBA16F
+    // Render targets for Multi-pass & MetalFX
+    id<MTLTexture>           m_tex_gbuffer = nil; // RGBA16F (half-res color)
+    id<MTLTexture>           m_tex_depth   = nil; // R32F (half-res depth)
+    id<MTLTexture>           m_tex_motion  = nil; // RG16F (half-res motion)
     id<MTLTexture>           m_tex_mesh_arrays = nil;
+
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
+    id<MTLFXTemporalScaler>  m_temporal_scaler = nil;
+#endif
 
     // State
     int   m_version          = 1;
@@ -147,51 +153,6 @@ class RendererMetal : public IRenderer {
         m_buf_cubes   = mkbuf(cubes.data(),   cubes.size(),   sizeof(GPUCube));
         m_buf_lights  = mkbuf(lights.data(),  lights.size(),  sizeof(GPULight));
 
-        // Generate Needles for primitives
-        m_needles_cpu.clear();
-        int obj_idx = 0;
-        auto add_needle = [&](Vec3 p, Vec3 n, float r, int id) {
-            GPUNeedle needle{};
-            set_vec3(needle.position, p);
-            set_vec3(needle.normal, n);
-            needle.radius = r;
-            needle.object_id = id;
-            set_vec3(needle.radiance, Vec3(0,0,0));
-            m_needles_cpu.push_back(needle);
-        };
-
-        for (auto& s : spheres) {
-            // Needles on 6 extremes of sphere
-            float r = s.radius;
-            Vec3 c(s.center[0], s.center[1], s.center[2]);
-            add_needle(c + Vec3(r,0,0), Vec3(1,0,0), r*1.5f, obj_idx);
-            add_needle(c + Vec3(-r,0,0), Vec3(-1,0,0), r*1.5f, obj_idx);
-            add_needle(c + Vec3(0,r,0), Vec3(0,1,0), r*1.5f, obj_idx);
-            add_needle(c + Vec3(0,-r,0), Vec3(0,-1,0), r*1.5f, obj_idx);
-            add_needle(c + Vec3(0,0,r), Vec3(0,0,1), r*1.5f, obj_idx);
-            add_needle(c + Vec3(0,0,-r), Vec3(0,0,-1), r*1.5f, obj_idx);
-            obj_idx++;
-        }
-        for (auto& cb : cubes) {
-            // Needles on 6 face centers
-            float hx = cb.half_size[0], hy = cb.half_size[1], hz = cb.half_size[2];
-            Vec3 c(cb.center[0], cb.center[1], cb.center[2]);
-            float r = std::max({hx, hy, hz}) * 2.0f;
-            add_needle(c + Vec3(hx,0,0), Vec3(1,0,0), r, obj_idx);
-            add_needle(c + Vec3(-hx,0,0), Vec3(-1,0,0), r, obj_idx);
-            add_needle(c + Vec3(0,hy,0), Vec3(0,1,0), r, obj_idx);
-            add_needle(c + Vec3(0,-hy,0), Vec3(0,-1,0), r, obj_idx);
-            add_needle(c + Vec3(0,0,hz), Vec3(0,0,1), r, obj_idx);
-            add_needle(c + Vec3(0,0,-hz), Vec3(0,0,-1), r, obj_idx);
-            obj_idx++;
-        }
-        
-        if (!m_needles_cpu.empty()) {
-            m_buf_needles = mkbuf(m_needles_cpu.data(), m_needles_cpu.size(), sizeof(GPUNeedle));
-        } else {
-            m_buf_needles = nil;
-        }
-
         m_uniforms.num_spheres   = int(spheres.size());
         m_uniforms.num_planes    = int(planes.size());
         m_uniforms.num_cubes     = int(cubes.size());
@@ -207,7 +168,9 @@ class RendererMetal : public IRenderer {
         std::string src = ReadShader(path);
         if (src.empty()) return nil;
         NSString* ns_src = [NSString stringWithUTF8String:src.c_str()];
-        id<MTLLibrary> lib = [m_device newLibraryWithSource:ns_src options:nil error:err];
+        MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
+        options.fastMathEnabled = YES;
+        id<MTLLibrary> lib = [m_device newLibraryWithSource:ns_src options:options error:err];
         if (!lib) return nil;
         id<MTLFunction> fn = [lib newFunctionWithName:@"raytrace_kernel"];
         if (!fn) { std::cerr << "[Metal] raytrace_kernel not found in " << path << std::endl; return nil; }
@@ -229,15 +192,39 @@ class RendererMetal : public IRenderer {
     void CreateRenderTargets() {
         if (m_render_w <= 0 || m_render_h <= 0) return;
         
-        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
-                                                                                        width:m_render_w
-                                                                                       height:m_render_h
-                                                                                    mipmapped:NO];
-        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
-        desc.storageMode = MTLStorageModePrivate;
+        // Render at 50% resolution
+        int half_w = std::max(1, m_render_w / 2);
+        int half_h = std::max(1, m_render_h / 2);
         
-        m_tex_gbuffer = [m_device newTextureWithDescriptor:desc];
-        m_tex_color   = [m_device newTextureWithDescriptor:desc];
+        auto mktex = [&](MTLPixelFormat fmt) -> id<MTLTexture> {
+            MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt
+                                                                                            width:half_w
+                                                                                           height:half_h
+                                                                                        mipmapped:NO];
+            desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+            desc.storageMode = MTLStorageModePrivate;
+            return [m_device newTextureWithDescriptor:desc];
+        };
+
+        m_tex_gbuffer = mktex(MTLPixelFormatRGBA16Float);
+        m_tex_depth   = mktex(MTLPixelFormatR32Float);
+        m_tex_motion  = mktex(MTLPixelFormatRG16Float);
+
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
+        if (@available(macOS 13.0, *)) {
+            MTLFXTemporalScalerDescriptor* sdesc = [MTLFXTemporalScalerDescriptor new];
+            sdesc.inputWidth = half_w;
+            sdesc.inputHeight = half_h;
+            sdesc.outputWidth = m_render_w;
+            sdesc.outputHeight = m_render_h;
+            sdesc.colorTextureFormat = MTLPixelFormatRGBA16Float;
+            sdesc.depthTextureFormat = MTLPixelFormatR32Float;
+            sdesc.motionTextureFormat = MTLPixelFormatRG16Float;
+            sdesc.outputTextureFormat = m_layer.pixelFormat;
+            sdesc.autoExposureEnabled = NO;
+            m_temporal_scaler = [sdesc newTemporalScalerWithDevice:m_device];
+        }
+#endif
     }
 
 public:
@@ -285,6 +272,9 @@ public:
 
     // ------------------------------------------------- Input
     void ProcessInput(const Uint8* keys, int mx, int my, float dt) override {
+        double old_yaw = m_yaw, old_pitch = m_pitch;
+        Vec3 old_pos = m_cam_pos;
+
         m_yaw   -= mx * 0.003;
         m_pitch -= my * 0.003;
         m_pitch  = std::clamp(m_pitch, -1.5, 1.5);
@@ -300,17 +290,24 @@ public:
         if (keys[SDL_SCANCODE_D]) m_cam_pos = m_cam_pos + right * spd;
         if (keys[SDL_SCANCODE_Q]) m_cam_pos.y -= spd;
         if (keys[SDL_SCANCODE_E]) m_cam_pos.y += spd;
+
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
+        if (@available(macOS 13.0, *)) {
+            if (m_temporal_scaler) {
+                if (old_yaw != m_yaw || old_pitch != m_pitch || old_pos.x != m_cam_pos.x || old_pos.y != m_cam_pos.y || old_pos.z != m_cam_pos.z) {
+                    m_temporal_scaler.reset = YES;
+                } else {
+                    m_temporal_scaler.reset = NO;
+                }
+            }
+        }
+#endif
     }
 
     void ToggleFog()     override { m_fog    = !m_fog; }
-    void ToggleJitter()  override { m_jitter = !m_jitter; }
 
     void SetSamples(int samples) override {
         m_samples = samples;
-    }
-
-    void SetDebugMode(int mode) override {
-        m_uniforms.debug_mode = mode;
     }
 
     void SwitchDemo(int version) override {
@@ -363,42 +360,6 @@ public:
         m_mesh_loaded    = true;
         m_uniforms.enable_triangles = 1;
 
-        // Generate Needles for Mesh (Decimation using distance threshold / extreme vertices)
-        m_needles_cpu.clear();
-        float min_dist_sq = 1.0f; // Threshold for decimation
-        int obj_id = 999;
-        auto add_needle = [&](Vec3 p, Vec3 n, float r) {
-            GPUNeedle needle{};
-            set_vec3(needle.position, p);
-            set_vec3(needle.normal, n);
-            needle.radius = r;
-            needle.object_id = obj_id;
-            set_vec3(needle.radiance, Vec3(0,0,0));
-            m_needles_cpu.push_back(needle);
-        };
-
-        for (const auto& tri : mesh.triangles) {
-            Vec3 v0(tri.v0[0], tri.v0[1], tri.v0[2]);
-            Vec3 n0(tri.n0[0], tri.n0[1], tri.n0[2]);
-            
-            bool too_close = false;
-            for (const auto& nd : m_needles_cpu) {
-                Vec3 np(nd.position[0], nd.position[1], nd.position[2]);
-                if (glm::dot(v0 - np, v0 - np) < min_dist_sq) {
-                    too_close = true; break;
-                }
-            }
-            if (!too_close) {
-                add_needle(v0, n0, 2.0f);
-            }
-        }
-        std::cout << "[Metal] Generated " << m_needles_cpu.size() << " needles for mesh." << std::endl;
-        
-        if (!m_needles_cpu.empty()) {
-            m_buf_needles = mkbuf(m_needles_cpu.data(), m_needles_cpu.size() * sizeof(GPUNeedle));
-        }
-
-        // Apply origin offset into uniforms
         m_uniforms.enable_triangles = 1;
         m_uniforms.num_triangles    = m_num_triangles;
         m_uniforms.num_bvh_nodes    = m_num_bvh_nodes;
@@ -417,6 +378,10 @@ public:
         m_num_triangles = 0;
         m_uniforms.enable_triangles = 0;
         m_uniforms.num_triangles    = 0;
+    }
+
+    void SetMeshOrigin(float x, float y, float z) override {
+        set_vec3(m_uniforms.model_pos, Vec3(x, y, z));
     }
 
     // ------------------------------------------------- OnResize
@@ -456,8 +421,8 @@ public:
             m_uniforms.max_depth     = 7;
             m_uniforms.tan_half_fov  = float(tan((60.0*M_PI/180.0) / 2.0));
             m_uniforms.aspect_ratio  = float(m_render_w) / float(m_render_h);
-            m_uniforms.screen_width  = float(m_render_w);
-            m_uniforms.screen_height = float(m_render_h);
+            m_uniforms.screen_width  = float(std::max(1, m_render_w / 2));
+            m_uniforms.screen_height = float(std::max(1, m_render_h / 2));
             set_vec3(m_uniforms.ambient_light, {0.3, 0.4, 0.6});
             set_vec3(m_uniforms.camera_origin,  m_cam_pos);
             set_vec3(m_uniforms.camera_forward, fwd);
@@ -473,28 +438,44 @@ public:
             id<MTLCommandBuffer> cmd = [m_queue commandBuffer];
 
             // --- Compute pass (ray tracing)
-            id<MTLComputePipelineState> ps = (m_version == 0) ? m_pipeline02 : m_pipeline03;
             id<MTLComputeCommandEncoder> ce = [cmd computeCommandEncoder];
-            [ce setComputePipelineState:ps];
-            [ce setTexture:drawable.texture atIndex:0];
-            [ce setBuffer:m_buf_mats     offset:0 atIndex:0];
-            [ce setBuffer:m_buf_spheres  offset:0 atIndex:1];
-            [ce setBuffer:m_buf_planes   offset:0 atIndex:2];
-            [ce setBuffer:m_buf_cubes    offset:0 atIndex:3];
+            [ce setComputePipelineState:(m_version == 1 ? m_pipeline03 : m_pipeline02)];
+            [ce setTexture:m_tex_gbuffer atIndex:0];
+            if (m_tex_mesh_arrays) {
+                [ce setTexture:m_tex_mesh_arrays atIndex:1];
+            } else {
+                [ce setTexture:m_tex_gbuffer atIndex:1]; // dummy bind
+            }
+            [ce setTexture:m_tex_depth atIndex:2];
+            [ce setTexture:m_tex_motion atIndex:3];
+
+            [ce setBuffer:m_buf_mats       offset:0 atIndex:0];
+            [ce setBuffer:m_buf_spheres    offset:0 atIndex:1];
+            [ce setBuffer:m_buf_planes     offset:0 atIndex:2];
+            [ce setBuffer:m_buf_cubes      offset:0 atIndex:3];
             // atIndex:4 reserved for octahedrons
-            [ce setBuffer:m_buf_lights   offset:0 atIndex:5];
-            [ce setBuffer:uniforms_buf   offset:0 atIndex:6];
+            [ce setBuffer:m_buf_lights     offset:0 atIndex:5];
+            [ce setBuffer:uniforms_buf     offset:0 atIndex:6];
             if (m_mesh_loaded && m_buf_triangles) {
                 [ce setBuffer:m_buf_triangles offset:0 atIndex:7];
                 [ce setBuffer:m_buf_bvh       offset:0 atIndex:8];
                 [ce setBuffer:m_buf_mesh_mats offset:0 atIndex:9];
-                if (m_tex_mesh_arrays) {
-                    [ce setTexture:m_tex_mesh_arrays atIndex:1];
+            }
+            [ce dispatchThreads:MTLSizeMake(m_render_w/2, m_render_h/2, 1)
+             threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+            [ce endEncoding];
+
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
+            if (@available(macOS 13.0, *)) {
+                if (m_temporal_scaler) {
+                    m_temporal_scaler.colorTexture = m_tex_gbuffer;
+                    m_temporal_scaler.depthTexture = m_tex_depth;
+                    m_temporal_scaler.motionTexture = m_tex_motion;
+                    m_temporal_scaler.outputTexture = drawable.texture;
+                    [m_temporal_scaler encodeToCommandBuffer:cmd];
                 }
             }
-            [ce dispatchThreads:MTLSizeMake(m_render_w, m_render_h, 1)
-             threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
-            [ce endEncoding];
+#endif
 
             // --- Render pass (ImGui overlay)
             m_rpdesc.colorAttachments[0].texture     = drawable.texture;
@@ -513,7 +494,6 @@ public:
 
             [cmd presentDrawable:drawable];
             [cmd commit];
-
             m_drawable = nil;
         }
     }

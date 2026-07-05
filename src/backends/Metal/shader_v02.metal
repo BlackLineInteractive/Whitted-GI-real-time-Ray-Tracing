@@ -400,6 +400,9 @@ float3 trace_ray(Ray ray, device const Material* materials, device const Sphere*
 }
 
 kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture(0)]],
+                            texture2d_array<float, access::read> mesh_textures [[texture(1)]],
+                            texture2d<float, access::write> outDepth [[texture(2)]],
+                            texture2d<float, access::write> outMotion [[texture(3)]],
                             device const Material* materials [[buffer(0)]],
                             device const Sphere* spheres [[buffer(1)]],
                             device const Plane* planes [[buffer(2)]],
@@ -436,4 +439,6 @@ kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture
     mapped = pow(clamp(mapped, float3(0.0), float3(1.0)), float3(1.0/2.2));
     
     outTexture.write(float4(mapped, 1.0), gid);
+    outDepth.write(float4(0.5, 0.0, 0.0, 0.0), gid);
+    outMotion.write(float4(0.0, 0.0, 0.0, 0.0), gid);
 }

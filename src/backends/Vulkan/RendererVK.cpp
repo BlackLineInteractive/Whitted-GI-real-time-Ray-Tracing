@@ -102,10 +102,10 @@ public:
 
     void SwitchDemo(int version)    override {}
     void ToggleFog()                 override {}
-    void ToggleJitter()              override {}
-    void SetCheckerboard(bool)       override {}
     void LoadMesh(const MeshData&)   override {}
     void ClearMesh()                 override {}
+    void SetMeshOrigin(float, float, float) override {}
+    void SetSamples(int)             override {}
     void OnResize(int, int)          override {}
     void BeginImGuiFrame()           override {}
 

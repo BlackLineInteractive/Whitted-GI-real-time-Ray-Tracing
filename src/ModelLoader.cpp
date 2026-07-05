@@ -52,25 +52,8 @@ static GPUMaterial ConvertMaterial(const aiMaterial* ai_mat) {
         m.albedo[0] = 0.8f; m.albedo[1] = 0.8f; m.albedo[2] = 0.8f;
     }
 
-    // If it's pure white/gray/black (often means texture is missing), make it colorful!
-    if (abs(m.albedo[0] - m.albedo[1]) < 0.05f && abs(m.albedo[1] - m.albedo[2]) < 0.05f) {
-        float h = fmod((float)(reinterpret_cast<uintptr_t>(ai_mat) * 137), 360.0f) / 360.0f;
-        float r=0, g=0, b=0;
-        int i = int(h * 6);
-        float f = h * 6 - i;
-        float q = 1 - f;
-        switch(i % 6) {
-            case 0: r = 1, g = f, b = 0; break;
-            case 1: r = q, g = 1, b = 0; break;
-            case 2: r = 0, g = 1, b = f; break;
-            case 3: r = 0, g = q, b = 1; break;
-            case 4: r = f, g = 0, b = 1; break;
-            case 5: r = 1, g = 0, b = q; break;
-        }
-        m.albedo[0] = r * 0.8f + 0.2f;
-        m.albedo[1] = g * 0.8f + 0.2f;
-        m.albedo[2] = b * 0.8f + 0.2f;
-    }
+    // If it's pure white/gray/black (often means texture is missing), we keep it as is.
+    // Rainbow colors removed for realism.
 
     // Emissive
     if (AI_SUCCESS == ai_mat->Get(AI_MATKEY_COLOR_EMISSIVE, col) &&

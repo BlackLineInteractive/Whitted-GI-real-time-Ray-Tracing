@@ -29,23 +29,21 @@ find_package(SDL2 REQUIRED)
 # --- Assimp (system install via Homebrew) ---
 find_package(assimp REQUIRED)
 
-# --- Bullet (system install via Homebrew) ---
-find_package(Bullet REQUIRED)
-include_directories(${BULLET_INCLUDE_DIRS})
+# --- Bullet removed ---
 
 include(FetchContent)
 
 # --- ImGui ---
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        master
+    GIT_TAG        v1.90.8
 )
 FetchContent_MakeAvailable(imgui)
 
 # --- ImGuiFileDialog (compile as plain source — avoids imgui CMake dependency) ---
 FetchContent_Declare(ImGuiFileDialog
     GIT_REPOSITORY https://github.com/aiekick/ImGuiFileDialog.git
-    GIT_TAG        master
+    GIT_TAG        v0.6.7
 )
 FetchContent_GetProperties(ImGuiFileDialog)
 if(NOT imguifiledialog_POPULATED)
@@ -93,7 +91,6 @@ include_directories(
 set(SOURCES
     src/main.cpp
     src/ModelLoader.cpp
-    src/Physics.cpp
     ${IMGUI_SOURCES}
 )
 
@@ -132,15 +129,15 @@ add_executable(${PROJECT_NAME} ${SOURCES})
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${SDL2_LIBRARIES}
     assimp
-    ${BULLET_LIBRARIES}
 )
 
 if(APPLE AND USE_METAL)
     find_library(METAL_LIBRARY     Metal)
+    find_library(METALFX_LIBRARY   MetalFX)
     find_library(QUARTZCORE_LIBRARY QuartzCore)
     find_library(COCOA_LIBRARY     Cocoa)
     target_link_libraries(${PROJECT_NAME} PRIVATE
-        ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${COCOA_LIBRARY}
+        ${METAL_LIBRARY} ${METALFX_LIBRARY} ${QUARTZCORE_LIBRARY} ${COCOA_LIBRARY}
     )
 endif()
 

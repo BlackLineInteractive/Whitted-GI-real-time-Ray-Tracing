@@ -5,7 +5,6 @@
 #include <sstream>
 #include "Renderer.h"
 #include "ModelLoader.h"
-#include "Physics.h"
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
 #include "ImGuiFileDialog.h"
@@ -16,11 +15,8 @@ struct Config {
     int   width               = 1280;
     int   height              = 720;
     bool  fullscreen          = false;
-    bool  enable_physics      = true;
-    bool  enable_jitter       = false;
     int   samples             = 1;
     bool  show_primitives     = true;
-    int   debug_mode          = 0;
     std::string model_path    = "";
     float model_x = 0.0f, model_y = 0.0f, model_z = -3.0f;
     float model_scale = 10.0f;
@@ -43,19 +39,20 @@ static Config LoadConfig() {
         if (sep == std::string::npos) continue;
         auto key = line.substr(0, sep);
         auto val = line.substr(sep + 1);
-        if (key == "width")               cfg.width               = std::stoi(val);
-        else if (key == "height")         cfg.height              = std::stoi(val);
-        else if (key == "fullscreen")     cfg.fullscreen          = std::stoi(val) > 0;
-        else if (key == "enable_physics") cfg.enable_physics      = std::stoi(val) > 0;
-        else if (key == "enable_jitter")  cfg.enable_jitter       = std::stoi(val) > 0;
-        else if (key == "samples")        cfg.samples             = std::stoi(val);
-        else if (key == "show_primitives") cfg.show_primitives    = std::stoi(val) > 0;
-        else if (key == "debug_mode")     cfg.debug_mode          = std::stoi(val);
-        else if (key == "model_path")     cfg.model_path          = val;
-        else if (key == "model_x")        cfg.model_x             = std::stof(val);
-        else if (key == "model_y")        cfg.model_y             = std::stof(val);
-        else if (key == "model_z")        cfg.model_z             = std::stof(val);
-        else if (key == "model_scale")    cfg.model_scale         = std::stof(val);
+        try {
+            if (key == "width")               cfg.width               = std::stoi(val);
+            else if (key == "height")         cfg.height              = std::stoi(val);
+            else if (key == "fullscreen")     cfg.fullscreen          = std::stoi(val) > 0;
+            else if (key == "samples")        cfg.samples             = std::stoi(val);
+            else if (key == "show_primitives") cfg.show_primitives    = std::stoi(val) > 0;
+            else if (key == "model_path")     cfg.model_path          = val;
+            else if (key == "model_x")        cfg.model_x             = std::stof(val);
+            else if (key == "model_y")        cfg.model_y             = std::stof(val);
+            else if (key == "model_z")        cfg.model_z             = std::stof(val);
+            else if (key == "model_scale")    cfg.model_scale         = std::stof(val);
+        } catch (...) {
+            std::cerr << "Failed to parse config line: " << line << std::endl;
+        }
     }
     return cfg;
 }
@@ -65,11 +62,8 @@ static void SaveConfig(const Config& cfg) {
     f << "width="               << cfg.width               << "\n";
     f << "height="              << cfg.height              << "\n";
     f << "fullscreen="          << (cfg.fullscreen ? 1 : 0) << "\n";
-    f << "enable_physics="      << (cfg.enable_physics ? 1 : 0) << "\n";
-    f << "enable_jitter="       << (cfg.enable_jitter ? 1 : 0) << "\n";
     f << "samples="             << cfg.samples << "\n";
     f << "show_primitives="     << (cfg.show_primitives ? 1 : 0) << "\n";
-    f << "debug_mode="          << cfg.debug_mode << "\n";
     f << "model_path="          << cfg.model_path          << "\n";
     f << "model_x="             << cfg.model_x             << "\n";
     f << "model_y="             << cfg.model_y             << "\n";
@@ -139,18 +133,6 @@ int main(int argc, char* argv[]) {
 
     // Apply initial feature states
     renderer->SetSamples(cfg.samples);
-    renderer->SetDebugMode(cfg.debug_mode);
-    if (cfg.enable_jitter) renderer->ToggleJitter();
-
-    // --------------------------------------- physics setup
-    PhysicsWorld physics;
-    if (cfg.enable_physics) {
-        physics.SetFloor(-1.0f);
-        // Add some fun bouncing spheres
-        physics.AddSphere(Vec3(-2.0f, 3.0f, -5.0f), 1.0f, 1.0f);
-        physics.AddSphere(Vec3( 0.0f, 5.0f, -4.5f), 1.2f, 1.5f);
-        physics.AddSphere(Vec3( 1.5f, 4.0f, -3.5f), 0.3f, 0.3f);
-    }
 
     // --------------------------------------- demo scene
     int  demo_version = 1;
@@ -170,10 +152,7 @@ int main(int argc, char* argv[]) {
 
     // ------------------------------------ UI state
     bool  fog_enabled     = true;
-    bool  physics_enabled = cfg.enable_physics;
-    bool  jitter_on       = cfg.enable_jitter;
     int   samples         = cfg.samples;
-    int   debug_mode      = cfg.debug_mode;
     bool  mouse_captured  = true;
     int   res_w           = cfg.width;
     int   res_h           = cfg.height;
@@ -225,12 +204,6 @@ int main(int argc, char* argv[]) {
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
         if (mouse_captured) renderer->ProcessInput(keys, mx, my, dt);
 
-        // Physics tick
-        if (physics_enabled) {
-            physics.Step(dt);
-            // (Positions fed into scene in renderer update — done via SwitchDemo override)
-        }
-
         // ---------------------------------- ImGui
         ImGui_ImplSDL2_NewFrame();
         renderer->BeginImGuiFrame();
@@ -248,7 +221,6 @@ int main(int argc, char* argv[]) {
         renderer->GetStats(ft, rays, tris, gpt);
         ImGui::TextColored({0.4f,1.0f,0.4f,1}, "FPS:       %.1f", io.Framerate);
         ImGui::TextColored({1.0f,1.0f,0.4f,1}, "Frame:     %.2f ms", 1000.f/std::max(io.Framerate,0.01f));
-        ImGui::TextColored({0.4f,0.8f,1.0f,1}, "Rays cast: %d", rays);
         ImGui::TextColored({0.9f,0.7f,0.5f,1}, "Triangles: %d", tris);
 
         ImGui::Separator();
@@ -266,14 +238,8 @@ int main(int argc, char* argv[]) {
         ImGui::Text("Render quality:");
         if (ImGui::Checkbox("Fog",  &fog_enabled))     renderer->ToggleFog();
         ImGui::SameLine();
-        if (ImGui::Checkbox("Jitter", &jitter_on))     renderer->ToggleJitter();
-        if (ImGui::SliderInt("Samples (AA)", &samples, 1, 4))
+        if (ImGui::SliderInt("Samples (TAA)", &samples, 1, 4))
             renderer->SetSamples(samples);
-
-        const char* debug_items[] = { "None", "G-Buffer: Mask/Roughness", "G-Buffer: Depth", "G-Buffer: Material ID", "Needles (Surfels)", "BVH Bounds" };
-        if (ImGui::Combo("Debug Mode", &debug_mode, debug_items, 6)) {
-            renderer->SetDebugMode(debug_mode);
-        }
 
         ImGui::Separator();
         // ---- Resolution
@@ -296,18 +262,6 @@ int main(int argc, char* argv[]) {
         if (ImGui::Button("Toggle Fullscreen  [F11]")) {
             bool fs = SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN_DESKTOP;
             SDL_SetWindowFullscreen(window, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
-        }
-
-        ImGui::Separator();
-        // ---- Physics
-        if (ImGui::Checkbox("Bullet Physics", &physics_enabled)) {
-            if (physics_enabled) {
-                physics.Clear();
-                physics.SetFloor(-1.0f);
-                physics.AddSphere(Vec3(-2.0f, 3.0f, -5.0f), 1.0f, 1.0f);
-                physics.AddSphere(Vec3( 0.0f, 5.0f, -4.5f), 1.2f, 1.5f);
-                physics.AddSphere(Vec3( 1.5f, 4.0f, -3.5f), 0.3f, 0.3f);
-            }
         }
 
         ImGui::Separator();
@@ -358,8 +312,7 @@ int main(int argc, char* argv[]) {
         // Update loaded model position in real-time
         static float last_pos[3] = {-999,-999,-999};
         if (mesh_loaded && (last_pos[0] != model_pos[0] || last_pos[1] != model_pos[1] || last_pos[2] != model_pos[2])) {
-            loaded_mesh.origin = Vec3(model_pos[0], model_pos[1], model_pos[2]);
-            renderer->LoadMesh(loaded_mesh);
+            renderer->SetMeshOrigin(model_pos[0], model_pos[1], model_pos[2]);
             last_pos[0] = model_pos[0];
             last_pos[1] = model_pos[1];
             last_pos[2] = model_pos[2];
@@ -385,8 +338,6 @@ int main(int argc, char* argv[]) {
     }
 
     // Save final config
-    cfg.enable_physics      = physics_enabled;
-    cfg.enable_jitter       = jitter_on;
     cfg.samples             = samples;
     cfg.model_x = model_pos[0];
     cfg.model_y = model_pos[1];

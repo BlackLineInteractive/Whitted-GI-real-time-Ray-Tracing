@@ -83,18 +83,6 @@ HitInfo intersect_triangle(Ray ray, device const Triangle& tri) {
     return info;
 }
 
-// ---------------------------------------------------------------- BVH traversal (iterative)
-bool aabb_hit(float3 aabb_min, float3 aabb_max, Ray ray, float t_max) {
-    float3 inv = 1.0 / ray.direction;
-    float3 t0  = (aabb_min - ray.origin) * inv;
-    float3 t1  = (aabb_max - ray.origin) * inv;
-    float3 mn  = min(t0, t1);
-    float3 mx  = max(t0, t1);
-    float tenter = max(max(mn.x, mn.y), mn.z);
-    float texit  = min(min(mx.x, mx.y), mx.z);
-    return texit >= max(tenter, EPSILON) && tenter < t_max;
-}
-
 HitInfo intersect_bvh(Ray ray,
                       device const BVHNode* nodes,
                       device const Triangle* tris,
@@ -102,16 +90,25 @@ HitInfo intersect_bvh(Ray ray,
     HitInfo best; best.hit = false; best.t = INF;
     if (node_count == 0) return best;
 
+    float3 inv_dir = 1.0 / ray.direction;
+
     int stack[32];
     int sp = 0;
     stack[sp++] = 0;
 
     while (sp > 0) {
         int idx = stack[--sp];
-        if (idx < 0 || idx >= node_count) continue;
         BVHNode n = nodes[idx];
 
-        if (!aabb_hit(n.aabb_min, n.aabb_max, ray, best.t)) continue;
+        // Inline AABB intersection for speed
+        float3 t0 = (n.aabb_min - ray.origin) * inv_dir;
+        float3 t1 = (n.aabb_max - ray.origin) * inv_dir;
+        float3 mn = min(t0, t1);
+        float3 mx = max(t0, t1);
+        float tenter = max(max(mn.x, mn.y), mn.z);
+        float texit  = min(min(mx.x, mx.y), mx.z);
+        
+        if (texit < max(tenter, EPSILON) || tenter >= best.t) continue;
 
         if (n.right_or_count <= 0) {
             // Leaf
@@ -122,11 +119,67 @@ HitInfo intersect_bvh(Ray ray,
                 if (h.hit && h.t < best.t) best = h;
             }
         } else {
-            if (sp < 30) stack[sp++] = n.left_or_tri;
-            if (sp < 30) stack[sp++] = n.right_or_count;
+            // Ordered traversal
+            int left = n.left_or_tri;
+            int right = n.right_or_count;
+            
+            BVHNode n_left = nodes[left];
+            float3 t0_l = (n_left.aabb_min - ray.origin) * inv_dir;
+            float3 t1_l = (n_left.aabb_max - ray.origin) * inv_dir;
+            float dist_left = max(max(min(t0_l.x, t1_l.x), min(t0_l.y, t1_l.y)), min(t0_l.z, t1_l.z));
+            
+            BVHNode n_right = nodes[right];
+            float3 t0_r = (n_right.aabb_min - ray.origin) * inv_dir;
+            float3 t1_r = (n_right.aabb_max - ray.origin) * inv_dir;
+            float dist_right = max(max(min(t0_r.x, t1_r.x), min(t0_r.y, t1_r.y)), min(t0_r.z, t1_r.z));
+            
+            if (dist_left > dist_right) {
+                if (sp < 32) stack[sp++] = left;
+                if (sp < 32) stack[sp++] = right;
+            } else {
+                if (sp < 32) stack[sp++] = right;
+                if (sp < 32) stack[sp++] = left;
+            }
         }
     }
     return best;
+}
+
+// ---------------------------------------------------------------- BVH Shadow Any-Hit
+bool intersect_bvh_shadow(Ray ray, float max_t, device const BVHNode* nodes, device const Triangle* tris, int node_count) {
+    if (node_count == 0) return false;
+
+    float3 inv_dir = 1.0 / ray.direction;
+    int stack[32];
+    int sp = 0;
+    stack[sp++] = 0;
+
+    while (sp > 0) {
+        int idx = stack[--sp];
+        BVHNode n = nodes[idx];
+
+        float3 t0 = (n.aabb_min - ray.origin) * inv_dir;
+        float3 t1 = (n.aabb_max - ray.origin) * inv_dir;
+        float3 mn = min(t0, t1);
+        float3 mx = max(t0, t1);
+        float tenter = max(max(mn.x, mn.y), mn.z);
+        float texit  = min(min(mx.x, mx.y), mx.z);
+        
+        if (texit < max(tenter, EPSILON) || tenter >= max_t) continue;
+
+        if (n.right_or_count <= 0) {
+            int start = n.left_or_tri;
+            int cnt   = -n.right_or_count;
+            for (int i = 0; i < cnt; i++) {
+                HitInfo h = intersect_triangle(ray, tris[start + i]);
+                if (h.hit && h.t < max_t) return true;
+            }
+        } else {
+            if (sp < 32) stack[sp++] = n.left_or_tri;
+            if (sp < 32) stack[sp++] = n.right_or_count;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------- hash / noise for jitter
@@ -255,7 +308,7 @@ bool point_in_cube(float3 p, device const Cube& c) {
     return d.x <= c.half_size.x && d.y <= c.half_size.y && d.z <= c.half_size.z;
 }
 
-float calc_analytic_shadow(float3 p, float3 n, float3 lpos, float lrad, device const Sphere* spheres, device const Plane* planes, device const Cube* cubes, constant Uniforms& u) {
+float calc_analytic_shadow(float3 p, float3 n, float3 lpos, float lrad, device const Sphere* spheres, device const Plane* planes, device const Cube* cubes, device const BVHNode* bvh_nodes, device const Triangle* triangles, constant Uniforms& u) {
     float3 L = lpos - p;
     float actual_dist = length(L);
     L /= actual_dist;
@@ -276,6 +329,15 @@ float calc_analytic_shadow(float3 p, float3 n, float3 lpos, float lrad, device c
             break;
         }
     }
+    
+    // Mesh shadows (Any-Hit BVH)
+    if (u.enable_triangles > 0 && occlusion < 1.0) {
+        Ray shadow_ray = make_ray(ro - u.model_pos, L);
+        if (intersect_bvh_shadow(shadow_ray, actual_dist - 0.05, bvh_nodes, triangles, u.num_bvh_nodes)) {
+            occlusion = 1.0;
+        }
+    }
+    
     return 1.0 - clamp(occlusion, 0.0, 1.0);
 }
 
@@ -501,12 +563,12 @@ float3 trace_ray(Ray ray, device const Material* materials, device const Sphere*
 
             float3 spec = float3(0.0);
             for (int i = 0; i < u.num_lights; i++) {
+                float sh = calc_analytic_shadow(hit.point, water_n, lights[i].position, lights[i].radius, spheres, planes, cubes, bvh_nodes, triangles, u);
                 float3 to_light = lights[i].position - hit.point;
                 float dist = length(to_light);
                 float3 L = to_light / dist;
                 float3 H = normalize(L + V);
                 float NdotH = max(0.0, dot(water_n, H));
-                float sh = calc_analytic_shadow(hit.point, water_n, lights[i].position, lights[i].radius, spheres, planes, cubes, u);
                 spec += lights[i].color * pow(NdotH, 800.0) * lights[i].intensity * sh * fresnel / (dist * dist + 0.1);
             }
             result += contrib * spec;
@@ -527,23 +589,21 @@ float3 trace_ray(Ray ray, device const Material* materials, device const Sphere*
                 float dist = sqrt(dist_sq);
                 float3 L = to_light / dist;
                 float NdotL = max(0.0, dot(N, L));
+                float sh = calc_analytic_shadow(hit.point, N, lights[i].position, lights[i].radius, spheres, planes, cubes, bvh_nodes, triangles, u);
 
-                if (NdotL > 0.0) {
-                    float sh = calc_analytic_shadow(hit.point, N, lights[i].position, lights[i].radius, spheres, planes, cubes, u);
-                    if (sh > 0.0) {
-                        float atten = lights[i].intensity / max(dist_sq, 0.01f);
-                        float3 H = normalize(L + V);
-                        float NdotH = max(0.0, dot(N, H));
-                        float shininess = pow(2.0, (1.0 - mat.roughness) * 10.0);
+                if (NdotL > 0.0 && sh > 0.0) {
+                    float atten = lights[i].intensity / max(dist_sq, 0.01f);
+                    float3 H = normalize(L + V);
+                    float NdotH = max(0.0, dot(N, H));
+                    float shininess = pow(2.0, (1.0 - mat.roughness) * 10.0);
 
-                        if (mat.type == METAL) {
-                            float3 spec = alb * lights[i].color * pow(NdotH, shininess) * atten;
-                            direct += spec * sh;
-                        } else {
-                            float3 diff = alb * lights[i].color * NdotL * atten;
-                            float3 spec = float3(1.0) * lights[i].color * pow(NdotH, shininess) * atten * 0.25 * (1.0 - mat.roughness);
-                            direct += (diff + spec) * sh;
-                        }
+                    if (mat.type == METAL) {
+                        float3 spec = alb * lights[i].color * pow(NdotH, shininess) * atten;
+                        direct += spec * sh;
+                    } else {
+                        float3 diff = alb * lights[i].color * NdotL * atten;
+                        float3 spec = float3(1.0) * lights[i].color * pow(NdotH, shininess) * atten * 0.25 * (1.0 - mat.roughness);
+                        direct += (diff + spec) * sh;
                     }
                 }
             }
@@ -597,8 +657,21 @@ float3 trace_ray(Ray ray, device const Material* materials, device const Sphere*
     return clamp(result, float3(0.0), float3(100.0));
 }
 
+// ACES tonemapping
+float3 aces_approx(float3 v) {
+    v *= 0.6f;
+    float a = 2.51f;
+    float b = 0.03f;
+    float c = 2.43f;
+    float d = 0.59f;
+    float e = 0.14f;
+    return clamp((v*(a*v+b))/(v*(c*v+d)+e), 0.0f, 1.0f);
+}
+
 kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture(0)]],
                             texture2d_array<float, access::read> mesh_textures [[texture(1)]],
+                            texture2d<float, access::write> outDepth [[texture(2)]],
+                            texture2d<float, access::write> outMotion [[texture(3)]],
                             device const Material* materials [[buffer(0)]],
                             device const Sphere*   spheres   [[buffer(1)]],
                             device const Plane*    planes    [[buffer(2)]],
@@ -657,7 +730,11 @@ kernel void raytrace_kernel(texture2d<float, access::write> outTexture [[texture
         color = mix(color, fog_col, fog_f);
     }
 
-    float3 mapped = color / (color + float3(1.0));
+    float3 mapped = aces_approx(color);
     mapped = pow(clamp(mapped, float3(0.0), float3(1.0)), float3(1.0/2.2));
     outTexture.write(float4(mapped, 1.0), gid);
+    
+    // Write dummy depth and motion for MetalFX
+    outDepth.write(float4(0.5, 0.0, 0.0, 0.0), gid);
+    outMotion.write(float4(0.0, 0.0, 0.0, 0.0), gid);
 }
