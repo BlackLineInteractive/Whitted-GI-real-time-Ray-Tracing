@@ -274,7 +274,7 @@ int main(int argc, char* argv[]) {
             IGFD::FileDialogConfig fdcfg;
             fdcfg.path = ".";
             ImGuiFileDialog::Instance()->OpenDialog(
-                "LoadModelDlg", "Choose 3D Model", ".glb,.gltf,.obj", fdcfg);
+                "LoadModelDlg", "Choose 3D Model", "3D models{.glb,.gltf,.obj},.*", fdcfg);
         }
 
         // Position controls
@@ -325,7 +325,7 @@ int main(int argc, char* argv[]) {
         ImGui::End();
 
         // ---- File dialog popup
-        if (ImGuiFileDialog::Instance()->Display("LoadModelDlg")) {
+        if (ImGuiFileDialog::Instance()->Display("LoadModelDlg", ImGuiWindowFlags_NoCollapse, ImVec2(600, 400))) {
             if (ImGuiFileDialog::Instance()->IsOk()) {
                 std::string sel = ImGuiFileDialog::Instance()->GetFilePathName();
                 strncpy(model_path_buf, sel.c_str(), sizeof(model_path_buf)-1);
