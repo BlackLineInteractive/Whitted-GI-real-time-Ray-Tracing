@@ -21,7 +21,7 @@ void PhysicsWorld::SetFloor(float plane_y) {
 int PhysicsWorld::AddSphere(Vec3 pos, float radius, float mass) {
     PhysicsBody b;
     b.position  = pos;
-    b.velocity  = {0, 0, 0};
+    b.velocity  = Vec3(0.0f);
     b.mass      = mass;
     b.radius    = radius;
     b.is_static = (mass <= 0.0f);
@@ -30,7 +30,7 @@ int PhysicsWorld::AddSphere(Vec3 pos, float radius, float mass) {
 }
 
 Vec3 PhysicsWorld::GetPosition(int handle) const {
-    if (handle < 0 || handle >= (int)m_bodies.size()) return {0,0,0};
+    if (handle < 0 || handle >= (int)m_bodies.size()) return Vec3(0.0f);
     return m_bodies[handle].position;
 }
 
@@ -65,7 +65,7 @@ void PhysicsWorld::Step(float dt) {
             auto& a = m_bodies[i];
             auto& b = m_bodies[j];
             Vec3  delta = b.position - a.position;
-            float dist  = delta.length();
+            float dist  = glm::length(delta);
             float min_d = a.radius + b.radius;
             if (dist < min_d && dist > 1e-6f) {
                 Vec3 n = delta / dist;
@@ -75,7 +75,7 @@ void PhysicsWorld::Step(float dt) {
 
                 // Impulse exchange
                 Vec3 rel_vel = b.velocity - a.velocity;
-                float vn = rel_vel.dot(n);
+                float vn = glm::dot(rel_vel, n);
                 if (vn < 0) {
                     float j_imp = -(1 + RESTITUTION) * vn /
                                   (1.0f/a.mass + 1.0f/b.mass + 1e-9f);

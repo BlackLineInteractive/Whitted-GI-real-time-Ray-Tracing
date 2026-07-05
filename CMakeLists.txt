@@ -63,15 +63,11 @@ foreach(HDR stb_image.h stb_image_write.h)
     endif()
 endforeach()
 
-# --- BVH (header-only C++) ---
-FetchContent_Declare(bvh
-    GIT_REPOSITORY https://github.com/madmann91/bvh.git
-    GIT_TAG        master
-)
-FetchContent_MakeAvailable(bvh)
+# --- BVH and GLM (local external) ---
+set(BVH_DIR ${CMAKE_SOURCE_DIR}/external/bvh/src)
+set(GLM_DIR ${CMAKE_SOURCE_DIR}/external/glm)
 
 set(IMGUI_DIR ${imgui_SOURCE_DIR})
-set(BVH_DIR   ${bvh_SOURCE_DIR}/src)
 
 set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui.cpp
@@ -89,6 +85,7 @@ include_directories(
     ${IMGUI_DIR}/backends
     ${STB_DIR}
     ${BVH_DIR}
+    ${GLM_DIR}
     ${IFDIALOG_DIR}
     ${assimp_INCLUDE_DIRS}
 )
@@ -106,6 +103,10 @@ if(APPLE AND USE_METAL)
         src/backends/Metal/RendererMetal.mm
     )
     add_definitions(-DUSE_METAL)
+    # Enable ARC only for our Metal renderer (avoids manual retain/release leaks).
+    # imgui_impl_metal.mm is left non-ARC to match upstream expectations.
+    set_source_files_properties(src/backends/Metal/RendererMetal.mm
+        PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 endif()
 
 if(USE_OPENGL)

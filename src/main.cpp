@@ -147,9 +147,9 @@ int main(int argc, char* argv[]) {
     if (cfg.enable_physics) {
         physics.SetFloor(-1.0f);
         // Add some fun bouncing spheres
-        physics.AddSphere({-2.0f, 3.0f, -5.0f}, 1.0f, 1.0f);
-        physics.AddSphere({ 0.0f, 5.0f, -4.5f}, 1.2f, 1.5f);
-        physics.AddSphere({ 1.5f, 4.0f, -3.5f}, 0.3f, 0.3f);
+        physics.AddSphere(Vec3(-2.0f, 3.0f, -5.0f), 1.0f, 1.0f);
+        physics.AddSphere(Vec3( 0.0f, 5.0f, -4.5f), 1.2f, 1.5f);
+        physics.AddSphere(Vec3( 1.5f, 4.0f, -3.5f), 0.3f, 0.3f);
     }
 
     // --------------------------------------- demo scene
@@ -162,7 +162,7 @@ int main(int argc, char* argv[]) {
     if (!cfg.model_path.empty()) {
         loaded_mesh = LoadModel(cfg.model_path, cfg.model_scale);
         if (loaded_mesh.valid) {
-            loaded_mesh.origin = {cfg.model_x, cfg.model_y, cfg.model_z};
+            loaded_mesh.origin = Vec3(cfg.model_x, cfg.model_y, cfg.model_z);
             renderer->LoadMesh(loaded_mesh);
             mesh_loaded = true;
         }
@@ -304,9 +304,9 @@ int main(int argc, char* argv[]) {
             if (physics_enabled) {
                 physics.Clear();
                 physics.SetFloor(-1.0f);
-                physics.AddSphere({-2.0f, 3.0f, -5.0f}, 1.0f, 1.0f);
-                physics.AddSphere({ 0.0f, 5.0f, -4.5f}, 1.2f, 1.5f);
-                physics.AddSphere({ 1.5f, 4.0f, -3.5f}, 0.3f, 0.3f);
+                physics.AddSphere(Vec3(-2.0f, 3.0f, -5.0f), 1.0f, 1.0f);
+                physics.AddSphere(Vec3( 0.0f, 5.0f, -4.5f), 1.2f, 1.5f);
+                physics.AddSphere(Vec3( 1.5f, 4.0f, -3.5f), 0.3f, 0.3f);
             }
         }
 
@@ -336,7 +336,7 @@ int main(int argc, char* argv[]) {
         if (ImGui::Button("Load Model") && model_path_buf[0] != '\0') {
             MeshData md = LoadModel(std::string(model_path_buf), model_scale);
             if (md.valid) {
-                md.origin = {model_pos[0], model_pos[1], model_pos[2]};
+                md.origin = Vec3(model_pos[0], model_pos[1], model_pos[2]);
                 renderer->LoadMesh(md);
                 loaded_mesh  = md;
                 mesh_loaded  = true;
@@ -358,7 +358,7 @@ int main(int argc, char* argv[]) {
         // Update loaded model position in real-time
         static float last_pos[3] = {-999,-999,-999};
         if (mesh_loaded && (last_pos[0] != model_pos[0] || last_pos[1] != model_pos[1] || last_pos[2] != model_pos[2])) {
-            loaded_mesh.origin = {model_pos[0], model_pos[1], model_pos[2]};
+            loaded_mesh.origin = Vec3(model_pos[0], model_pos[1], model_pos[2]);
             renderer->LoadMesh(loaded_mesh);
             last_pos[0] = model_pos[0];
             last_pos[1] = model_pos[1];

@@ -9,7 +9,7 @@ struct MeshData {
     std::vector<GPUMaterial>  materials;
     std::vector<GPUBVHNode>   bvh_nodes;
     std::vector<uint8_t>      texture_array_data;
-    Vec3 origin = {0, 0, 0};
+    Vec3 origin = Vec3(0.0f);
     bool valid  = false;
 };
 

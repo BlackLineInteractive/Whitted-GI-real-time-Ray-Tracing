@@ -50,7 +50,12 @@ class RendererMetal : public IRenderer {
     id<MTLBuffer> m_buf_planes   = nil;
     id<MTLBuffer> m_buf_cubes    = nil;
     id<MTLBuffer> m_buf_lights   = nil;
-    id<MTLBuffer> m_buf_uniforms = nil;
+
+    // Triple-buffered uniforms to avoid CPU/GPU races on in-flight frames
+    static constexpr int kMaxFramesInFlight = 3;
+    id<MTLBuffer>       m_buf_uniforms[kMaxFramesInFlight] = { nil, nil, nil };
+    int                m_frame_index = 0;
+    dispatch_semaphore_t m_frame_sema = nil;
 
     // Mesh GPU buffers
     id<MTLBuffer> m_buf_triangles = nil;
@@ -267,8 +272,11 @@ public:
             return false;
         }
 
-        m_buf_uniforms = [m_device newBufferWithLength:sizeof(GPUUniforms)
-                                               options:MTLResourceStorageModeShared];
+        for (int i = 0; i < kMaxFramesInFlight; i++) {
+            m_buf_uniforms[i] = [m_device newBufferWithLength:sizeof(GPUUniforms)
+                                                     options:MTLResourceStorageModeShared];
+        }
+        m_frame_sema = dispatch_semaphore_create(kMaxFramesInFlight);
 
         ImGui_ImplSDL2_InitForMetal(win);
         ImGui_ImplMetal_Init(m_device);
@@ -282,8 +290,8 @@ public:
         m_pitch  = std::clamp(m_pitch, -1.5, 1.5);
 
         Vec3 fwd(cos(m_yaw)*cos(m_pitch), sin(m_pitch), sin(m_yaw)*cos(m_pitch));
-        Vec3 right = Vec3(0,1,0).cross(fwd).normalize();
-        Vec3 flat  = Vec3(0,1,0).cross(right).normalize();
+        Vec3 right = glm::normalize(glm::cross(Vec3(0,1,0), fwd));
+        Vec3 flat  = glm::normalize(glm::cross(Vec3(0,1,0), right));
 
         float spd = 3.0f * dt;
         if (keys[SDL_SCANCODE_W]) m_cam_pos = m_cam_pos - flat  * spd;
@@ -376,7 +384,7 @@ public:
             bool too_close = false;
             for (const auto& nd : m_needles_cpu) {
                 Vec3 np(nd.position[0], nd.position[1], nd.position[2]);
-                if ((v0 - np).length_sq() < min_dist_sq) {
+                if (glm::dot(v0 - np, v0 - np) < min_dist_sq) {
                     too_close = true; break;
                 }
             }
@@ -420,7 +428,7 @@ public:
 
     // ------------------------------------------------- BeginImGuiFrame
     void BeginImGuiFrame() override {
-        m_drawable = [[m_layer nextDrawable] retain];
+        m_drawable = [m_layer nextDrawable];
         if (!m_drawable) return;
 
         m_rpdesc.colorAttachments[0].texture     = m_drawable.texture;
@@ -435,10 +443,15 @@ public:
             if (!m_drawable) return;
             id<CAMetalDrawable> drawable = m_drawable;
 
+            // Block until a uniform buffer slot is free (max frames in flight).
+            dispatch_semaphore_wait(m_frame_sema, DISPATCH_TIME_FOREVER);
+            m_frame_index = (m_frame_index + 1) % kMaxFramesInFlight;
+            id<MTLBuffer> uniforms_buf = m_buf_uniforms[m_frame_index];
+
             // Update uniforms
             Vec3 fwd(cos(m_yaw)*cos(m_pitch), sin(m_pitch), sin(m_yaw)*cos(m_pitch));
-            Vec3 right = Vec3(0,1,0).cross(fwd).normalize();
-            Vec3 up    = fwd.cross(right).normalize();
+            Vec3 right = glm::normalize(glm::cross(Vec3(0,1,0), fwd));
+            Vec3 up    = glm::normalize(glm::cross(fwd, right));
 
             m_uniforms.max_depth     = 7;
             m_uniforms.tan_half_fov  = float(tan((60.0*M_PI/180.0) / 2.0));
@@ -455,7 +468,7 @@ public:
             m_uniforms.enable_jitter       = m_jitter ? 1 : 0;
             m_uniforms.samples_per_pixel   = m_samples;
 
-            memcpy([m_buf_uniforms contents], &m_uniforms, sizeof(GPUUniforms));
+            memcpy([uniforms_buf contents], &m_uniforms, sizeof(GPUUniforms));
 
             id<MTLCommandBuffer> cmd = [m_queue commandBuffer];
 
@@ -470,7 +483,7 @@ public:
             [ce setBuffer:m_buf_cubes    offset:0 atIndex:3];
             // atIndex:4 reserved for octahedrons
             [ce setBuffer:m_buf_lights   offset:0 atIndex:5];
-            [ce setBuffer:m_buf_uniforms offset:0 atIndex:6];
+            [ce setBuffer:uniforms_buf   offset:0 atIndex:6];
             if (m_mesh_loaded && m_buf_triangles) {
                 [ce setBuffer:m_buf_triangles offset:0 atIndex:7];
                 [ce setBuffer:m_buf_bvh       offset:0 atIndex:8];
@@ -492,10 +505,15 @@ public:
             ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), cmd, re);
             [re endEncoding];
 
+            // Release the uniform-buffer slot once the GPU is done with this frame.
+            __block dispatch_semaphore_t sema = m_frame_sema;
+            [cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
+                dispatch_semaphore_signal(sema);
+            }];
+
             [cmd presentDrawable:drawable];
             [cmd commit];
 
-            [m_drawable release];
             m_drawable = nil;
         }
     }

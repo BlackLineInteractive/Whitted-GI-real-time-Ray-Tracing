@@ -568,28 +568,28 @@ float3 trace_ray(Ray ray, device const Material* materials, device const Sphere*
             }
         }
         else if (mat.type == GLASS && sp < MAX_STACK) {
+            // Use the unflipped geometric normal so the entering/exiting test works
             float n1 = 1.0, n2 = mat.refractive_index;
-            float3 Nf = N; float cos_i = -dot(cur.direction, Nf);
-            if (cos_i < 0.0) { float tmp = n1; n1 = n2; n2 = tmp; Nf = -Nf; cos_i = -dot(cur.direction, Nf); }
-            float3 F = schlick(cos_i, n1, n2);
-            float fresnel_r = F.x;
+            float3 Nf = hit.normal; float cos_i = -dot(cur.direction, Nf);
+            if (cos_i < 0.0) { float tmp = n1; n1 = n2; n2 = tmp; Nf = -Nf; cos_i = -cos_i; }
+
+            float eta = n1 / n2;
+            float k = 1.0 - eta * eta * (1.0 - cos_i * cos_i);
+            // Total internal reflection: all energy goes to the reflected ray
+            float fresnel_r = (k < 0.0) ? 1.0 : schlick(cos_i, n1, n2).x;
 
             if (fresnel_r > EPSILON && sp < MAX_STACK) {
-                stack_ray[sp] = make_ray(hit.point + N * 3e-3, reflect(cur.direction, N));
+                stack_ray[sp] = make_ray(hit.point + Nf * 3e-3, reflect(cur.direction, Nf));
                 stack_contrib[sp] = contrib * fresnel_r;
                 stack_depth[sp] = depth - 1;
                 sp++;
             }
-            if ((1.0 - fresnel_r) > EPSILON && sp < MAX_STACK) {
-                float eta = n1 / n2;
-                float k = 1.0 - eta * eta * (1.0 - cos_i * cos_i);
-                if (k >= 0.0) {
-                    float3 T = eta * cur.direction + (eta * cos_i - sqrt(k)) * Nf;
-                    stack_ray[sp] = make_ray(hit.point - Nf * 5e-3, T);
-                    stack_contrib[sp] = contrib * (1.0 - fresnel_r);
-                    stack_depth[sp] = depth - 1;
-                    sp++;
-                }
+            if (k >= 0.0 && (1.0 - fresnel_r) > EPSILON && sp < MAX_STACK) {
+                float3 T = eta * cur.direction + (eta * cos_i - sqrt(k)) * Nf;
+                stack_ray[sp] = make_ray(hit.point - Nf * 5e-3, T);
+                stack_contrib[sp] = contrib * (1.0 - fresnel_r);
+                stack_depth[sp] = depth - 1;
+                sp++;
             }
         }
     }

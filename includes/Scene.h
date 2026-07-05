@@ -3,28 +3,16 @@
 #include <cstring>
 #include <vector>
 #include <limits>
+#include <glm/glm.hpp>
 
 const double PI      = acos(-1.0);
 const double INF     = std::numeric_limits<double>::infinity();
 const double EPSILON = 1e-7;
 
-struct Vec3 {
-    double x, y, z;
-    Vec3(double x = 0, double y = 0, double z = 0) : x(x), y(y), z(z) {}
-    Vec3 operator+(const Vec3& b) const { return {x+b.x, y+b.y, z+b.z}; }
-    Vec3 operator-(const Vec3& b) const { return {x-b.x, y-b.y, z-b.z}; }
-    Vec3 operator-()              const { return {-x, -y, -z}; }
-    Vec3 operator*(double s)      const { return {x*s, y*s, z*s}; }
-    Vec3 operator/(double s)      const { return {x/s, y/s, z/s}; }
-    double dot(const Vec3& b)     const { return x*b.x + y*b.y + z*b.z; }
-    Vec3 cross(const Vec3& b)     const { return {y*b.z-z*b.y, z*b.x-x*b.z, x*b.y-y*b.x}; }
-    double length_sq()            const { return x*x + y*y + z*z; }
-    double length()               const { return std::sqrt(length_sq()); }
-    Vec3   normalize()            const { double l = length(); return (l > EPSILON) ? (*this/l) : Vec3(0,0,0); }
-};
-inline Vec3 operator*(double s, const Vec3& v) { return v * s; }
+using Vec3 = glm::vec3;
+
 inline void set_vec3(float* dst, const Vec3& v) {
-    dst[0] = float(v.x); dst[1] = float(v.y); dst[2] = float(v.z);
+    dst[0] = v.x; dst[1] = v.y; dst[2] = v.z;
 }
 
 enum MaterialType { DIFFUSE = 0, METAL = 1, GLASS = 2, EMISSIVE = 3, CHECKERBOARD = 4, WATER = 5, PBR = 6 };
@@ -33,8 +21,8 @@ struct Material {
     Vec3 albedo, emission, albedo2;
     double roughness, metallic, refractive_index;
     MaterialType type;
-    Material(MaterialType t = DIFFUSE, Vec3 alb = {0.8,0.8,0.8}, Vec3 emiss = {0,0,0},
-             double rough = 0.5, double metal = 0.0, double ri = 1.5, Vec3 alb2 = {0.1,0.1,0.1})
+    Material(MaterialType t = DIFFUSE, Vec3 alb = Vec3(0.8f,0.8f,0.8f), Vec3 emiss = Vec3(0.0f,0.0f,0.0f),
+             double rough = 0.5, double metal = 0.0, double ri = 1.5, Vec3 alb2 = Vec3(0.1f,0.1f,0.1f))
         : albedo(alb), emission(emiss), roughness(rough), metallic(metal),
           refractive_index(ri), type(t), albedo2(alb2) {}
 };

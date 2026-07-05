@@ -97,7 +97,7 @@ static GPUMaterial ConvertMaterial(const aiMaterial* ai_mat) {
 #include <bvh/v2/bvh.h>
 #include <bvh/v2/vec.h>
 #include <bvh/v2/tri.h>
-#include <bvh/v2/default_builder.h>
+#include <bvh/v2/binned_sah_builder.h>
 
 static void BuildBVH(std::vector<GPUTriangle>& tris,
                      std::vector<GPUBVHNode>&  nodes,
@@ -128,7 +128,7 @@ static void BuildBVH(std::vector<GPUTriangle>& tris,
         centers.push_back(bbox.get_center());
     }
 
-    bvh::v2::Bvh<bvh::v2::Node<Scalar, 3>> bvh = bvh::v2::DefaultBuilder<bvh::v2::Node<Scalar, 3>>::build(bboxes, centers);
+    bvh::v2::Bvh<bvh::v2::Node<Scalar, 3>> bvh = bvh::v2::BinnedSahBuilder<bvh::v2::Node<Scalar, 3>>::build(bboxes, centers);
 
     // Convert to GPU format
     std::vector<GPUTriangle> ordered_tris;

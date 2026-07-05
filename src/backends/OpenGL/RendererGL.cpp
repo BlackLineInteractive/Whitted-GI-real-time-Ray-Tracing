@@ -230,8 +230,8 @@ public:
         cam_pitch = std::clamp(cam_pitch, -1.5, 1.5);
         
         Vec3 fwd(cos(cam_yaw)*cos(cam_pitch), sin(cam_pitch), sin(cam_yaw)*cos(cam_pitch));
-        Vec3 right = Vec3(0,1,0).cross(fwd).normalize(); 
-        Vec3 flat_fwd = Vec3(0,1,0).cross(right).normalize(); 
+        Vec3 right = glm::normalize(glm::cross(Vec3(0,1,0), fwd)); 
+        Vec3 flat_fwd = glm::normalize(glm::cross(Vec3(0,1,0), right)); 
         
         float speed = 3.0 * dt;
         if (keys[SDL_SCANCODE_W]) cam_pos = cam_pos - flat_fwd * speed; 
@@ -264,8 +264,8 @@ public:
 
     void Render(float dt) override {
         Vec3 fwd(cos(cam_yaw)*cos(cam_pitch), sin(cam_pitch), sin(cam_yaw)*cos(cam_pitch));
-        Vec3 right = Vec3(0,1,0).cross(fwd).normalize(); 
-        Vec3 up = fwd.cross(right).normalize();
+        Vec3 right = glm::normalize(glm::cross(Vec3(0,1,0), fwd)); 
+        Vec3 up = glm::normalize(glm::cross(fwd, right));
 
         uniforms.max_depth = 7;
         uniforms.tan_half_fov = std::tan((60.0*PI/180.0) / 2.0);
