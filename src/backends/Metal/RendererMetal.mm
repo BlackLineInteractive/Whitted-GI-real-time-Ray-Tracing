@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include "Renderer.h"
 #include "imgui.h"
@@ -87,6 +88,9 @@ class RendererMetal : public IRenderer {
     bool  m_jitter           = false;
     int   m_samples          = 1;
     bool  m_mesh_loaded      = false;
+    float m_render_scale     = 0.5f;
+    bool  m_game_mode        = true;
+    float m_cam_velocity_y   = 0.0f;
     int   m_render_w         = 0;
     int   m_render_h         = 0;
     int   m_num_triangles    = 0;
@@ -99,6 +103,32 @@ class RendererMetal : public IRenderer {
     double      m_pitch      = 0.0;
 
     int m_total_rays = 0;
+
+    // GPU timing (exponential moving average over completed command buffers)
+    std::atomic<double> m_gpu_ms_ema{0.0};
+    std::atomic<uint64_t> m_gpu_samples{0};
+
+    // Upload `bytes` of `data` into a GPU-private (VRAM-resident) buffer.
+    // On a discrete GPU, StorageModeShared buffers stay in host memory and every
+    // read crosses PCIe — fatal for BVH/triangle traversal, which is nothing but
+    // scattered reads. Private storage puts them in VRAM.
+    id<MTLBuffer> MakePrivateBuffer(const void* data, size_t bytes) {
+        bytes = std::max<size_t>(bytes, 16);
+        id<MTLBuffer> dst = [m_device newBufferWithLength:bytes
+                                                  options:MTLResourceStorageModePrivate];
+        if (!data) return dst;
+
+        id<MTLBuffer> staging = [m_device newBufferWithBytes:data length:bytes
+                                                     options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cmd = [m_queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+        [blit copyFromBuffer:staging sourceOffset:0
+                    toBuffer:dst destinationOffset:0 size:bytes];
+        [blit endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+        return dst;
+    }
 
     // ------------------------------------------------- scene setup
     void SetupScene(int version) {
@@ -142,9 +172,7 @@ class RendererMetal : public IRenderer {
 
         auto mkbuf = [&](const void* data, size_t n, size_t sz) -> id<MTLBuffer> {
             size_t bytes = std::max(n * sz, sz);
-            if (!data || n == 0)
-                return [m_device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
-            return [m_device newBufferWithBytes:data length:bytes options:MTLResourceStorageModeShared];
+            return MakePrivateBuffer((n == 0) ? nullptr : data, bytes);
         };
 
         m_buf_mats    = mkbuf(mats.data(),    mats.size(),    sizeof(GPUMaterial));
@@ -192,9 +220,9 @@ class RendererMetal : public IRenderer {
     void CreateRenderTargets() {
         if (m_render_w <= 0 || m_render_h <= 0) return;
         
-        // Render at 50% resolution
-        int half_w = std::max(1, m_render_w / 2);
-        int half_h = std::max(1, m_render_h / 2);
+        // Render at scaled resolution
+        int half_w = std::max(1, (int)(m_render_w * m_render_scale));
+        int half_h = std::max(1, (int)(m_render_h * m_render_scale));
         
         auto mktex = [&](MTLPixelFormat fmt) -> id<MTLTexture> {
             MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt
@@ -288,8 +316,26 @@ public:
         if (keys[SDL_SCANCODE_S]) m_cam_pos = m_cam_pos + flat  * spd;
         if (keys[SDL_SCANCODE_A]) m_cam_pos = m_cam_pos - right * spd;
         if (keys[SDL_SCANCODE_D]) m_cam_pos = m_cam_pos + right * spd;
-        if (keys[SDL_SCANCODE_Q]) m_cam_pos.y -= spd;
-        if (keys[SDL_SCANCODE_E]) m_cam_pos.y += spd;
+        
+        if (m_game_mode) {
+            // Apply gravity
+            m_cam_velocity_y -= 9.8f * dt;
+            m_cam_pos.y += m_cam_velocity_y * dt;
+            
+            // Floor collision
+            float floor_y = 1.0f; // Eye height above the floor plane
+            if (m_cam_pos.y <= floor_y) {
+                m_cam_pos.y = floor_y;
+                m_cam_velocity_y = 0.0f;
+                // Jump
+                if (keys[SDL_SCANCODE_SPACE]) {
+                    m_cam_velocity_y = 4.0f;
+                }
+            }
+        } else {
+            if (keys[SDL_SCANCODE_Q]) m_cam_pos.y -= spd;
+            if (keys[SDL_SCANCODE_E]) m_cam_pos.y += spd;
+        }
 
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
         if (@available(macOS 13.0, *)) {
@@ -310,6 +356,27 @@ public:
         m_samples = samples;
     }
 
+    void SetMaxDepth(int depth) override {
+        m_uniforms.max_depth = depth;
+    }
+
+    void SetGameMode(bool enabled) override {
+        m_game_mode = enabled;
+        if (enabled && m_cam_pos.y < 1.0f) {
+            m_cam_pos.y = 1.0f;
+            m_cam_velocity_y = 0.0f;
+        }
+    }
+
+    void SetRenderScale(float scale) override {
+        if (std::abs(m_render_scale - scale) > 0.01f) {
+            m_render_scale = scale;
+            CreateRenderTargets();
+        }
+    }
+
+    float GetRenderScale() const override { return m_render_scale; }
+
     void SwitchDemo(int version) override {
         m_version = version;
         SetupScene(version);
@@ -320,8 +387,7 @@ public:
         if (!mesh.valid || mesh.triangles.empty()) return;
 
         auto mkbuf = [&](const void* data, size_t bytes) -> id<MTLBuffer> {
-            return [m_device newBufferWithBytes:data length:bytes
-                                       options:MTLResourceStorageModeShared];
+            return MakePrivateBuffer(data, bytes);
         };
 
         m_buf_triangles = mkbuf(mesh.triangles.data(),
@@ -418,7 +484,7 @@ public:
             Vec3 right = glm::normalize(glm::cross(Vec3(0,1,0), fwd));
             Vec3 up    = glm::normalize(glm::cross(fwd, right));
 
-            m_uniforms.max_depth     = 7;
+            
             m_uniforms.tan_half_fov  = float(tan((60.0*M_PI/180.0) / 2.0));
             m_uniforms.aspect_ratio  = float(m_render_w) / float(m_render_h);
             m_uniforms.screen_width  = float(std::max(1, m_render_w / 2));
@@ -488,7 +554,16 @@ public:
 
             // Release the uniform-buffer slot once the GPU is done with this frame.
             __block dispatch_semaphore_t sema = m_frame_sema;
-            [cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
+            __block std::atomic<double>* ema  = &m_gpu_ms_ema;
+            __block std::atomic<uint64_t>* nsamp = &m_gpu_samples;
+            [cmd addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+                double ms = (cb.GPUEndTime - cb.GPUStartTime) * 1000.0;
+                if (ms > 0.0) {
+                    double prev = ema->load(std::memory_order_relaxed);
+                    ema->store(prev <= 0.0 ? ms : prev * 0.9 + ms * 0.1,
+                               std::memory_order_relaxed);
+                    nsamp->fetch_add(1, std::memory_order_relaxed);
+                }
                 dispatch_semaphore_signal(sema);
             }];
 
@@ -503,7 +578,11 @@ public:
         ft   = 0;
         rays = m_total_rays;
         tris = m_num_triangles;
-        gpt  = 0;
+        gpt  = float(m_gpu_ms_ema.load(std::memory_order_relaxed));
+    }
+
+    void SetVSync(bool enabled) override {
+        if (m_layer) m_layer.displaySyncEnabled = enabled ? YES : NO;
     }
 
     // ------------------------------------------------- Cleanup

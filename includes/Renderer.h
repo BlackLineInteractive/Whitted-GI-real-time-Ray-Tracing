@@ -21,6 +21,15 @@ public:
     virtual void GetStats(float& outFrameTimeMs, int& outRayCount,
                           int& outTriCount, float& outGpuTimeMs) = 0;
     virtual void Cleanup() = 0;
+
+    // Optional: uncap the presentation rate (benchmarking). No-op by default.
+    virtual void SetVSync(bool /*enabled*/) {}
+    // Optional: internal render scale, 1.0 = native, 0.5 = quarter-pixel count.
+    virtual void  SetRenderScale(float /*scale*/) {}
+    virtual float GetRenderScale() const { return 1.0f; }
+
+    virtual void SetMaxDepth(int /*depth*/) {}
+    virtual void SetGameMode(bool /*enabled*/) {}
 };
 
 #ifdef USE_METAL

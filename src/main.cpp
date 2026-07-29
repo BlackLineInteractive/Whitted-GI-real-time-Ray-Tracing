@@ -3,6 +3,9 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <algorithm>
+#include <vector>
+#include <cstring>
 #include "Renderer.h"
 #include "ModelLoader.h"
 #include "imgui.h"
@@ -20,6 +23,10 @@ struct Config {
     std::string model_path    = "";
     float model_x = 0.0f, model_y = 0.0f, model_z = -3.0f;
     float model_scale = 10.0f;
+    float render_scale = 0.5f;
+    int   max_depth   = 7;
+    bool  game_mode   = true;
+    bool  vsync       = true;
 };
 
 static std::string GetConfigPath() {
@@ -50,6 +57,10 @@ static Config LoadConfig() {
             else if (key == "model_y")        cfg.model_y             = std::stof(val);
             else if (key == "model_z")        cfg.model_z             = std::stof(val);
             else if (key == "model_scale")    cfg.model_scale         = std::stof(val);
+            else if (key == "render_scale")   cfg.render_scale        = std::stof(val);
+            else if (key == "max_depth")      cfg.max_depth           = std::stoi(val);
+            else if (key == "game_mode")      cfg.game_mode           = std::stoi(val) > 0;
+            else if (key == "vsync")          cfg.vsync               = std::stoi(val) > 0;
         } catch (...) {
             std::cerr << "Failed to parse config line: " << line << std::endl;
         }
@@ -69,12 +80,105 @@ static void SaveConfig(const Config& cfg) {
     f << "model_y="             << cfg.model_y             << "\n";
     f << "model_z="             << cfg.model_z             << "\n";
     f << "model_scale="         << cfg.model_scale         << "\n";
+    f << "render_scale="        << cfg.render_scale        << "\n";
+    f << "max_depth="           << cfg.max_depth           << "\n";
+    f << "game_mode="           << (cfg.game_mode ? 1 : 0) << "\n";
+    f << "vsync="               << (cfg.vsync ? 1 : 0)     << "\n";
+}
+
+// ----------------------------------------------------------------- bench ----
+// Deterministic off-line benchmark: no vsync, scripted camera, GPU timings.
+// Enabled with --bench [frames]. Used to compare optimisation work run to run.
+
+struct BenchOpts {
+    bool  enabled = false;
+    int   frames  = 400;
+    int   demo    = 1;
+    int   samples = -1;      // -1 = leave config value
+    float scale   = -1.0f;   // -1 = leave renderer default
+    std::string mesh;
+};
+
+static int RunBench(IRenderer* renderer, SDL_Window* window, const BenchOpts& b) {
+    renderer->SetVSync(false);
+    renderer->SwitchDemo(b.demo);
+    if (b.samples > 0)  renderer->SetSamples(b.samples);
+    if (b.scale  > 0.f) renderer->SetRenderScale(b.scale);
+
+    if (!b.mesh.empty()) {
+        MeshData md = LoadModel(b.mesh, 10.0f);
+        if (!md.valid) { std::cerr << "[bench] mesh load failed: " << b.mesh << "\n"; return 1; }
+        md.origin = Vec3(0, 0, -3);
+        renderer->LoadMesh(md);
+    }
+
+    // Scripted camera: a slow orbit so every frame differs (worst case for any
+    // temporal reuse) but the path is identical between runs.
+    std::vector<double> gpu_ms, cpu_ms;
+    gpu_ms.reserve(b.frames); cpu_ms.reserve(b.frames);
+
+    const int warmup = 60;
+    Uint64 freq = SDL_GetPerformanceFrequency();
+
+    for (int f = 0; f < b.frames + warmup; ++f) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) { if (e.type == SDL_QUIT) return 0; }
+
+        Uint64 t0 = SDL_GetPerformanceCounter();
+
+        // 1 px/frame of yaw + a little strafe: always "moving".
+        Uint8 keys[SDL_NUM_SCANCODES] = {};
+        keys[SDL_SCANCODE_W] = (f / 60) % 2 == 0 ? 1 : 0;
+        renderer->ProcessInput(keys, 2, 0, 1.0f / 60.0f);
+
+        ImGui_ImplSDL2_NewFrame();
+        renderer->BeginImGuiFrame();
+        ImGui::NewFrame();
+        ImGui::Render();
+        renderer->Render(1.0f / 60.0f);
+
+        Uint64 t1 = SDL_GetPerformanceCounter();
+
+        if (f >= warmup) {
+            float ft, gpt; int rays, tris;
+            renderer->GetStats(ft, rays, tris, gpt);
+            gpu_ms.push_back(gpt);
+            cpu_ms.push_back(double(t1 - t0) * 1000.0 / double(freq));
+        }
+    }
+
+    auto pct = [](std::vector<double> v, double p) {
+        if (v.empty()) return 0.0;
+        std::sort(v.begin(), v.end());
+        size_t i = size_t(p * (v.size() - 1));
+        return v[i];
+    };
+    double gpu_med = pct(gpu_ms, 0.5), gpu_95 = pct(gpu_ms, 0.95);
+    double cpu_med = pct(cpu_ms, 0.5);
+
+    int dw, dh; SDL_GetWindowSizeInPixels(window, &dw, &dh);
+    std::printf("\n=== BENCH ===\n");
+    std::printf("drawable      : %dx%d   render scale %.2f\n", dw, dh, renderer->GetRenderScale());
+    std::printf("GPU  median   : %7.3f ms  (%6.1f fps)\n", gpu_med, gpu_med > 0 ? 1000.0 / gpu_med : 0.0);
+    std::printf("GPU  p95      : %7.3f ms  (%6.1f fps)\n", gpu_95, gpu_95 > 0 ? 1000.0 / gpu_95 : 0.0);
+    std::printf("CPU  median   : %7.3f ms\n", cpu_med);
+    std::printf("frames        : %zu\n\n", gpu_ms.size());
+    return 0;
 }
 
 // -------------------------------------------------------------------- main --
 
 int main(int argc, char* argv[]) {
-    (void)argc; (void)argv;
+    BenchOpts bench;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        auto next = [&](float def) { return (i + 1 < argc) ? float(atof(argv[++i])) : def; };
+        if      (a == "--bench")   { bench.enabled = true; if (i + 1 < argc && argv[i+1][0] != '-') bench.frames = int(next(400)); }
+        else if (a == "--demo")    bench.demo    = int(next(1));
+        else if (a == "--samples") bench.samples = int(next(1));
+        else if (a == "--scale")   bench.scale   = next(1.0f);
+        else if (a == "--mesh")    { if (i + 1 < argc) bench.mesh = argv[++i]; }
+    }
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         std::cerr << "SDL_Init error: " << SDL_GetError() << std::endl;
@@ -131,8 +235,20 @@ int main(int argc, char* argv[]) {
         SDL_DestroyWindow(window); SDL_Quit(); return -1;
     }
 
+    if (bench.enabled) {
+        ImGui_ImplSDL2_NewFrame();  // prime the backend before the timing loop
+        int rc = RunBench(renderer, window, bench);
+        renderer->Cleanup(); delete renderer;
+        ImGui::DestroyContext(); SDL_DestroyWindow(window); SDL_Quit();
+        return rc;
+    }
+
     // Apply initial feature states
     renderer->SetSamples(cfg.samples);
+    renderer->SetRenderScale(cfg.render_scale);
+    renderer->SetMaxDepth(cfg.max_depth);
+    renderer->SetGameMode(cfg.game_mode);
+    renderer->SetVSync(cfg.vsync);
 
     // --------------------------------------- demo scene
     int  demo_version = 1;
@@ -238,8 +354,19 @@ int main(int argc, char* argv[]) {
         ImGui::Text("Render quality:");
         if (ImGui::Checkbox("Fog",  &fog_enabled))     renderer->ToggleFog();
         ImGui::SameLine();
+        if (ImGui::Checkbox("VSync", &cfg.vsync))      renderer->SetVSync(cfg.vsync);
+
         if (ImGui::SliderInt("Samples (TAA)", &samples, 1, 4))
             renderer->SetSamples(samples);
+        if (ImGui::SliderFloat("Render Scale", &cfg.render_scale, 0.25f, 1.0f, "%.2f"))
+            renderer->SetRenderScale(cfg.render_scale);
+        if (ImGui::SliderInt("Ray Depth", &cfg.max_depth, 1, 7))
+            renderer->SetMaxDepth(cfg.max_depth);
+            
+        ImGui::Separator();
+        // ---- Game Mode
+        if (ImGui::Checkbox("Game Mode (Gravity & Floor)", &cfg.game_mode))
+            renderer->SetGameMode(cfg.game_mode);
 
         ImGui::Separator();
         // ---- Resolution

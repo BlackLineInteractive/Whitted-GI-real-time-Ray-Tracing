@@ -55,129 +55,185 @@ struct HitInfo { bool hit; float t; float3 point, normal; int mat_index; float2 
 
 Ray make_ray(float3 o, float3 d) { return {o, normalize(d)}; }
 
-// ---------------------------------------------------------------- Möller–Trumbore triangle intersection
-HitInfo intersect_triangle(Ray ray, device const Triangle& tri) {
-    HitInfo info; info.hit = false; info.t = INF;
-    float3 e1 = tri.v1 - tri.v0;
-    float3 e2 = tri.v2 - tri.v0;
-    float3 h  = cross(ray.direction, e2);
-    float  a  = dot(e1, h);
-    if (abs(a) < EPSILON) return info;
-    float  f = 1.0 / a;
-    float3 s = ray.origin - tri.v0;
-    float  u = f * dot(s, h);
-    if (u < 0.0 || u > 1.0) return info;
-    float3 q = cross(s, e1);
-    float  v = f * dot(ray.direction, q);
-    if (v < 0.0 || u + v > 1.0) return info;
-    float  t = f * dot(e2, q);
-    if (t < EPSILON) return info;
-    float w = 1.0 - u - v;
-    info.hit     = true;
-    info.t       = t;
-    info.point   = ray.origin + ray.direction * t;
-    info.normal  = normalize(w * tri.n0 + u * tri.n1 + v * tri.n2);
-    info.uv      = w * tri.uv0 + u * tri.uv1 + v * tri.uv2;
-    info.mat_index = tri.mat_index;
-    info.is_mesh = true;
-    return info;
+// ---------------------------------------------------------------- BVH traversal
+//
+// The traversal keeps only (t, u, v, triangle index) while walking the tree and
+// reconstructs the normal / UV / material exactly once, after the closest hit is
+// known. Interpolating and normalising per candidate triangle — as the previous
+// version did — costs a normalize() and a full HitInfo copy for every triangle
+// tested, most of which are immediately discarded.
+
+struct TriHit { float t; float u, v; int idx; };
+
+constant int BVH_STACK = 28;
+
+// Slab test. Returns whether the box is hit within [0, tmax] and reports the
+// entry distance, which drives near-child-first ordering.
+static inline bool slab_hit(float3 bmin, float3 bmax, float3 ro, float3 inv,
+                            float tmax, thread float& tenter) {
+    float3 t0 = (bmin - ro) * inv;
+    float3 t1 = (bmax - ro) * inv;
+    float3 mn = min(t0, t1);
+    float3 mx = max(t0, t1);
+    float te = max(max(mn.x, mn.y), mn.z);
+    float tx = min(min(mx.x, mx.y), mx.z);
+    tenter = te;
+    return tx >= max(te, 0.0f) && te < tmax;
 }
 
-HitInfo intersect_bvh(Ray ray,
-                      device const BVHNode* nodes,
-                      device const Triangle* tris,
-                      int node_count) {
-    HitInfo best; best.hit = false; best.t = INF;
+TriHit intersect_bvh(Ray ray, device const BVHNode* nodes,
+                     device const Triangle* tris, int node_count) {
+    TriHit best; best.t = INF; best.u = 0.0f; best.v = 0.0f; best.idx = -1;
     if (node_count == 0) return best;
 
-    float3 inv_dir = 1.0 / ray.direction;
+    float3 ro  = ray.origin;
+    float3 rd  = ray.direction;
+    float3 inv = 1.0f / rd;
 
-    int stack[32];
-    int sp = 0;
-    stack[sp++] = 0;
+    int   stack_node[BVH_STACK];
+    float stack_tenter[BVH_STACK];
+    int   sp   = 0;
+    int   node = 0;
 
-    while (sp > 0) {
-        int idx = stack[--sp];
-        BVHNode n = nodes[idx];
+    { // reject the whole tree up front
+        float te;
+        BVHNode r = nodes[0];
+        if (!slab_hit(r.aabb_min, r.aabb_max, ro, inv, best.t, te)) return best;
+    }
 
-        // Inline AABB intersection for speed
-        float3 t0 = (n.aabb_min - ray.origin) * inv_dir;
-        float3 t1 = (n.aabb_max - ray.origin) * inv_dir;
-        float3 mn = min(t0, t1);
-        float3 mx = max(t0, t1);
-        float tenter = max(max(mn.x, mn.y), mn.z);
-        float texit  = min(min(mx.x, mx.y), mx.z);
-        
-        if (texit < max(tenter, EPSILON) || tenter >= best.t) continue;
+    for (;;) {
+        BVHNode n = nodes[node];
 
         if (n.right_or_count <= 0) {
-            // Leaf
             int start = n.left_or_tri;
             int cnt   = -n.right_or_count;
             for (int i = 0; i < cnt; i++) {
-                HitInfo h = intersect_triangle(ray, tris[start + i]);
-                if (h.hit && h.t < best.t) best = h;
+                device const Triangle& tri = tris[start + i];
+                float3 e1 = tri.v1 - tri.v0;
+                float3 e2 = tri.v2 - tri.v0;
+                float3 h  = cross(rd, e2);
+                float  a  = dot(e1, h);
+                if (abs(a) < EPSILON) continue;
+                float  f  = 1.0f / a;
+                float3 s  = ro - tri.v0;
+                float  u  = f * dot(s, h);
+                if (u < 0.0f || u > 1.0f) continue;
+                float3 q  = cross(s, e1);
+                float  v  = f * dot(rd, q);
+                if (v < 0.0f || u + v > 1.0f) continue;
+                float  t  = f * dot(e2, q);
+                if (t > EPSILON && t < best.t) {
+                    best.t = t; best.u = u; best.v = v; best.idx = start + i;
+                }
             }
         } else {
-            // Ordered traversal
-            int left = n.left_or_tri;
-            int right = n.right_or_count;
-            
-            BVHNode n_left = nodes[left];
-            float3 t0_l = (n_left.aabb_min - ray.origin) * inv_dir;
-            float3 t1_l = (n_left.aabb_max - ray.origin) * inv_dir;
-            float dist_left = max(max(min(t0_l.x, t1_l.x), min(t0_l.y, t1_l.y)), min(t0_l.z, t1_l.z));
-            
-            BVHNode n_right = nodes[right];
-            float3 t0_r = (n_right.aabb_min - ray.origin) * inv_dir;
-            float3 t1_r = (n_right.aabb_max - ray.origin) * inv_dir;
-            float dist_right = max(max(min(t0_r.x, t1_r.x), min(t0_r.y, t1_r.y)), min(t0_r.z, t1_r.z));
-            
-            if (dist_left > dist_right) {
-                if (sp < 32) stack[sp++] = left;
-                if (sp < 32) stack[sp++] = right;
-            } else {
-                if (sp < 32) stack[sp++] = right;
-                if (sp < 32) stack[sp++] = left;
+            int l = n.left_or_tri;
+            int r = n.right_or_count;
+            BVHNode nl = nodes[l];
+            BVHNode nr = nodes[r];
+            float tl, tr;
+            bool hl = slab_hit(nl.aabb_min, nl.aabb_max, ro, inv, best.t, tl);
+            bool hr = slab_hit(nr.aabb_min, nr.aabb_max, ro, inv, best.t, tr);
+
+            if (hl && hr) {
+                if (tl > tr) { int ti = l; l = r; r = ti; float tf = tl; tl = tr; tr = tf; }
+                if (sp < BVH_STACK) { stack_node[sp] = r; stack_tenter[sp] = tr; sp++; }
+                node = l;
+                continue;
             }
+            if (hl) { node = l; continue; }
+            if (hr) { node = r; continue; }
         }
+
+        // Pop, skipping entries the closest hit has since made irrelevant.
+        bool popped = false;
+        while (sp > 0) {
+            sp--;
+            if (stack_tenter[sp] < best.t) { node = stack_node[sp]; popped = true; break; }
+        }
+        if (!popped) break;
     }
     return best;
 }
 
+// Resolve the interpolated shading attributes of a confirmed closest hit.
+HitInfo resolve_tri_hit(Ray ray, TriHit th, device const Triangle* tris) {
+    HitInfo info;
+    device const Triangle& tri = tris[th.idx];
+    float w = 1.0f - th.u - th.v;
+    info.hit       = true;
+    info.t         = th.t;
+    info.point     = ray.origin + ray.direction * th.t;
+    info.normal    = normalize(w * tri.n0 + th.u * tri.n1 + th.v * tri.n2);
+    info.uv        = w * tri.uv0 + th.u * tri.uv1 + th.v * tri.uv2;
+    info.mat_index = tri.mat_index;
+    info.is_mesh   = true;
+    return info;
+}
+
 // ---------------------------------------------------------------- BVH Shadow Any-Hit
-bool intersect_bvh_shadow(Ray ray, float max_t, device const BVHNode* nodes, device const Triangle* tris, int node_count) {
+// Any-hit: no ordering, no attribute interpolation, returns on the first blocker.
+bool intersect_bvh_shadow(Ray ray, float max_t, device const BVHNode* nodes,
+                          device const Triangle* tris, int node_count) {
     if (node_count == 0) return false;
 
-    float3 inv_dir = 1.0 / ray.direction;
-    int stack[32];
-    int sp = 0;
-    stack[sp++] = 0;
+    float3 ro  = ray.origin;
+    float3 rd  = ray.direction;
+    float3 inv = 1.0f / rd;
 
-    while (sp > 0) {
-        int idx = stack[--sp];
-        BVHNode n = nodes[idx];
+    int stack_node[BVH_STACK];
+    int sp   = 0;
+    int node = 0;
 
-        float3 t0 = (n.aabb_min - ray.origin) * inv_dir;
-        float3 t1 = (n.aabb_max - ray.origin) * inv_dir;
-        float3 mn = min(t0, t1);
-        float3 mx = max(t0, t1);
-        float tenter = max(max(mn.x, mn.y), mn.z);
-        float texit  = min(min(mx.x, mx.y), mx.z);
-        
-        if (texit < max(tenter, EPSILON) || tenter >= max_t) continue;
+    {
+        float te;
+        BVHNode r = nodes[0];
+        if (!slab_hit(r.aabb_min, r.aabb_max, ro, inv, max_t, te)) return false;
+    }
+
+    for (;;) {
+        BVHNode n = nodes[node];
 
         if (n.right_or_count <= 0) {
             int start = n.left_or_tri;
             int cnt   = -n.right_or_count;
             for (int i = 0; i < cnt; i++) {
-                HitInfo h = intersect_triangle(ray, tris[start + i]);
-                if (h.hit && h.t < max_t) return true;
+                device const Triangle& tri = tris[start + i];
+                float3 e1 = tri.v1 - tri.v0;
+                float3 e2 = tri.v2 - tri.v0;
+                float3 h  = cross(rd, e2);
+                float  a  = dot(e1, h);
+                if (abs(a) < EPSILON) continue;
+                float  f  = 1.0f / a;
+                float3 s  = ro - tri.v0;
+                float  u  = f * dot(s, h);
+                if (u < 0.0f || u > 1.0f) continue;
+                float3 q  = cross(s, e1);
+                float  v  = f * dot(rd, q);
+                if (v < 0.0f || u + v > 1.0f) continue;
+                float  t  = f * dot(e2, q);
+                if (t > EPSILON && t < max_t) return true;
             }
         } else {
-            if (sp < 32) stack[sp++] = n.left_or_tri;
-            if (sp < 32) stack[sp++] = n.right_or_count;
+            int l = n.left_or_tri;
+            int r = n.right_or_count;
+            BVHNode nl = nodes[l];
+            BVHNode nr = nodes[r];
+            float tl, tr;
+            bool hl = slab_hit(nl.aabb_min, nl.aabb_max, ro, inv, max_t, tl);
+            bool hr = slab_hit(nr.aabb_min, nr.aabb_max, ro, inv, max_t, tr);
+
+            if (hl && hr) {
+                if (sp < BVH_STACK) stack_node[sp++] = r;
+                node = l;
+                continue;
+            }
+            if (hl) { node = l; continue; }
+            if (hr) { node = r; continue; }
         }
+
+        if (sp == 0) break;
+        node = stack_node[--sp];
     }
     return false;
 }
@@ -272,10 +328,10 @@ HitInfo find_closest(Ray ray,
     if (u.enable_triangles > 0) {
         Ray local_ray = ray;
         local_ray.origin -= u.model_pos;
-        HitInfo h = intersect_bvh(local_ray, bvh_nodes, triangles, u.num_bvh_nodes);
-        if (h.hit && h.t < closest.t) {
-            h.point += u.model_pos;
-            closest = h;
+        TriHit th = intersect_bvh(local_ray, bvh_nodes, triangles, u.num_bvh_nodes);
+        if (th.idx >= 0) {
+            closest = resolve_tri_hit(local_ray, th, triangles);
+            closest.point += u.model_pos;
         }
     } else {
         for (int i = 0; i < u.num_spheres; i++) { HitInfo h = intersect_sphere(ray, spheres[i]); if (h.hit && h.t < closest.t) closest = h; }
@@ -451,9 +507,11 @@ float3 trace_ray(Ray ray, device const Material* materials, device const Sphere*
                  texture2d_array<float, access::read> mesh_textures,
                  constant Uniforms& u, thread float& first_dist) {
 
+    // The primary hit distance (used by the fog term) is taken from the first
+    // iteration of the loop below rather than from a second, identical
+    // find_closest() call — that duplicate doubled the cost of every primary ray.
     first_dist = 60.0;
-    HitInfo first = find_closest(ray, spheres, planes, cubes, bvh_nodes, triangles, u);
-    if (first.hit) first_dist = first.t;
+    bool first_iteration = true;
 
     float3 result = float3(0.0);
     Ray stack_ray[MAX_STACK];
@@ -474,6 +532,11 @@ float3 trace_ray(Ray ray, device const Material* materials, device const Sphere*
         if (depth <= 0) continue;
 
         HitInfo hit = find_closest(cur, spheres, planes, cubes, bvh_nodes, triangles, u);
+
+        if (first_iteration) {
+            first_iteration = false;
+            if (hit.hit) first_dist = hit.t;
+        }
 
         if (!hit.hit) {
             result += contrib * sky_color(cur.direction);
